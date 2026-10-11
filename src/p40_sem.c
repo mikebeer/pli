@@ -193,7 +193,8 @@ static void set_dims(Sym *s, Node *b)
     for (; b; b = b->next) {
         if (i >= MAXD) perr(b->line, "too many dimensions", s->name);
         if (b->fl) {
-            if (i > 0) perr(b->line, "only the first bound may be *", 0);
+            if (i > 0)
+                perr(b->line, "only the first bound may be *", 0);
             s->star = 1;
             s->lo[i] = 1;
             s->hi[i] = 0;

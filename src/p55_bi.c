@@ -183,7 +183,8 @@ static char *gbuiltin(Node *e, int *k)
             if (n[0] == 'd')
                 return cat5("((double)(", s->hbv, " - ", s->lbv,
                             " + 1))");
-            return cat3("((double)", n[0] == 'l' ? s->lbv : s->hbv, ")");
+            return cat3("((double)",
+                        n[0] == 'l' ? s->lbv : s->hbv, ")");
         }
         if (n[0] == 'd') return itoa_(s->hi[d] - s->lo[d] + 1);
         return itoa_(n[0] == 'l' ? s->lo[d] : s->hi[d]);

@@ -1895,7 +1895,8 @@ static void set_dims(Sym *s, Node *b)
     for (; b; b = b->next) {
         if (i >= MAXD) perr(b->line, "too many dimensions", s->name);
         if (b->fl) {
-            if (i > 0) perr(b->line, "only the first bound may be *", 0);
+            if (i > 0)
+                perr(b->line, "only the first bound may be *", 0);
             s->star = 1;
             s->lo[i] = 1;
             s->hi[i] = 0;
@@ -2956,7 +2957,8 @@ static char *gbuiltin(Node *e, int *k)
             if (n[0] == 'd')
                 return cat5("((double)(", s->hbv, " - ", s->lbv,
                             " + 1))");
-            return cat3("((double)", n[0] == 'l' ? s->lbv : s->hbv, ")");
+            return cat3("((double)",
+                        n[0] == 'l' ? s->lbv : s->hbv, ")");
         }
         if (n[0] == 'd') return itoa_(s->hi[d] - s->lo[d] + 1);
         return itoa_(n[0] == 'l' ? s->lo[d] : s->hi[d]);
