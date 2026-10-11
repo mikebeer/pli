@@ -1036,7 +1036,8 @@ static void pl_en(PLF *f, double x)
     pl_enext(f, &a, &b, &c);
     if (c == 'F') {
         if (b < 0) b = 0;
-        sprintf(t, "%.*f", (int)(b > 40 ? 40 : b), pl_fx(x, (int)b));
+        sprintf(t, "%.*f", (int)(b > 40 ? 40 : b),
+                pl_round(x, (double)b));
         if (t[0] == '-' && strspn(t + 1, "0.") == strlen(t + 1))
             memmove(t, t + 1, strlen(t));
         pl_padw(f, t, (long)strlen(t), a, 0);
@@ -1123,8 +1124,8 @@ static int pl_need(PLF *f)
 static void pl_gskip(PLF *f, long n)
 {
     if (n < 1) n = 1;
-    if (f->lv) f->lv = 0;
-    else n--;
+    f->lv = 0;
+    n--;
     while (n-- > 0) {
         if (!pl_rdline(f)) { pl_eofsig(f); return; }
         f->lv = 0;
@@ -1321,9 +1322,9 @@ static void pl_wrbin(PLF *f, const void *p, long n)
 /* ---- misc statements ---- */
 static void pl_disp(PS s)
 {
-    long i;
-    for (i = 0; i < s.n; i++) putc((unsigned char)s.p[i], stdout);
-    putc('\n', stdout);
+    PLF *f = &pl_sysprt;
+    if (f->col > 0) pl_ob(f, '\n');
+    pl_os(f, s);
     fflush(stdout);
 }
 
@@ -1331,6 +1332,9 @@ static void pl_reply(PV d)
 {
     char b[256];
     long n;
+    PLF *f = &pl_sysprt;
+    if (f->col > 0) pl_ob(f, '\n');
+    fflush(stdout);
     if (!fgets(b, sizeof b, stdin)) b[0] = 0;
     n = (long)strlen(b);
     while (n > 0 && (b[n - 1] == '\n' || b[n - 1] == '\r')) n--;

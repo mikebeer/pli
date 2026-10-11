@@ -39,11 +39,18 @@ static char *param_decl(Sym *pm, Fn *f)
             el = is_long(pm) ? "long" : (pm->ty == TY_PTR ?
                                          "void *" : "double");
         }
+        if (pm->star) {
+            pm->lbv = mkcn("lb", pm->id, pm->name);
+            pm->hbv = mkcn("hb", pm->id, pm->name);
+        }
+        t[0] = 0;
+        if (pm->star)
+            sprintf(t, ", long %s, long %s", pm->lbv, pm->hbv);
         if (pm->nd == 1)
-            return is_str(pm) ?
+            return cat2(is_str(pm) ?
                 cat4(el, " (*", nm, cat2(")", sb_str(&b))) :
-                cat3(el, " *", nm);
-        return cat5(el, " (*", nm, ")", sb_str(&b));
+                cat3(el, " *", nm), t);
+        return cat2(cat5(el, " (*", nm, ")", sb_str(&b)), t);
     }
     if (pm->ty == TY_STRUCT) {
         pm->cn = nm;
@@ -94,7 +101,7 @@ static void gen_fn(Fn *f)
         for (pm = ps->params; pm; pm = pm->params) {
             if (!first) sb_s(&hdr, ", ");
             first = 0;
-            sb_s(&hdr, param_decl(pm, f));
+            sb_s(&hdr, pm->pdecl);
         }
         if (first) sb_s(&hdr, "void");
         sb_c(&hdr, ')');
@@ -281,6 +288,12 @@ int main(int argc, char **argv)
         }
     }
     if (!mainp) perr(1, "no main procedure", 0);
+    for (a = 0; a < nfn; a++)
+        if (!fnall[a]->ison) {
+            Sym *pm;
+            for (pm = fnall[a]->ps->params; pm; pm = pm->params)
+                pm->pdecl = param_decl(pm, fnall[a]);
+        }
     for (a = 0; a < nfn; a++) gen_fn(fnall[a]);
     for (a = 0; a < nfn; a++) asm_fn(fnall[a]);
     gen_init_fn();

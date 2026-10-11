@@ -1,0 +1,20 @@
+/* words.pli -- count words in a line with INDEX and SUBSTR */
+WORDS: PROCEDURE OPTIONS(MAIN);
+  DECLARE TEXT CHAR(80) VARYING;
+  DECLARE (I, N, START) FIXED BINARY(31);
+  DECLARE IN_WORD BIT(1);
+  TEXT = 'the quick brown fox jumps over the lazy dog';
+  N = 0;
+  IN_WORD = '0'B;
+  DO I = 1 TO LENGTH(TEXT);
+    IF SUBSTR(TEXT, I, 1) = ' ' THEN IN_WORD = '0'B;
+    ELSE DO;
+      IF ^IN_WORD THEN N = N + 1;
+      IN_WORD = '1'B;
+    END;
+  END;
+  PUT SKIP LIST('words:', N);
+  PUT SKIP LIST('first space at', INDEX(TEXT, ' '));
+  PUT SKIP LIST('reversed:', REVERSE(TEXT));
+  PUT SKIP LIST('upper:', UPPERCASE(SUBSTR(TEXT, 1, 9)));
+END WORDS;

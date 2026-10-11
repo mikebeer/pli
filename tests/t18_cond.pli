@@ -1,0 +1,25 @@
+/* more conditions: SUBSCRIPTRANGE, CONVERSION, ONCODE, REVERT */
+CD: PROCEDURE OPTIONS(MAIN);
+  DECLARE T(3) FIXED BINARY(31) INITIAL(1, 2, 3);
+  DECLARE (I, K) FIXED BINARY(31);
+  DECLARE X FIXED DECIMAL(7, 2);
+  ON SUBSCRIPTRANGE BEGIN;
+    PUT SKIP LIST('subscript out of range, code', ONCODE);
+  END;
+  (SUBSCRIPTRANGE): BEGIN;
+    I = 5;
+    K = T(I);
+    PUT SKIP LIST('continued');
+  END;
+  ON CONVERSION BEGIN;
+    PUT SKIP LIST('bad number, code', ONCODE);
+  END;
+  X = 'oops';
+  PUT SKIP LIST('x stays', X);
+  ON ZERODIVIDE PUT SKIP LIST('divide by zero');
+  K = 1 / (I - 5);
+  REVERT ZERODIVIDE;
+  ON FINISH PUT SKIP LIST('finish unit runs at STOP');
+  PUT SKIP LIST('done');
+  STOP;
+END CD;

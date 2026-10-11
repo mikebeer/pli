@@ -178,8 +178,13 @@ static char *gbuiltin(Node *e, int *k)
         else if (s->nd > 1)
             perr(e->line, "dimension number needed", 0);
         if (d < 0 || d >= s->nd) perr(e->line, "bad dimension", 0);
-        if (s->star) perr(e->line, "bounds of * array unknown", 0);
         ge_q = 0;
+        if (d == 0 && s->lbv) {
+            if (n[0] == 'd')
+                return cat5("((double)(", s->hbv, " - ", s->lbv,
+                            " + 1))");
+            return cat3("((double)", n[0] == 'l' ? s->lbv : s->hbv, ")");
+        }
         if (n[0] == 'd') return itoa_(s->hi[d] - s->lo[d] + 1);
         return itoa_(n[0] == 'l' ? s->lo[d] : s->hi[d]);
     }

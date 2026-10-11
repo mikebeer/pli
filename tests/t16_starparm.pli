@@ -1,0 +1,29 @@
+/* array parameters with (*) bounds know their bounds */
+SP: PROCEDURE OPTIONS(MAIN);
+  DECLARE V(3:7) FIXED BINARY(31) INITIAL(5, 4, 3, 2, 1);
+  DECLARE W(4) FLOAT DECIMAL(6) INITIAL(1.5, 2.5, 3.5, 4.5);
+  DECLARE I FIXED BINARY(31);
+
+  TOTAL: PROCEDURE(A) RETURNS(FIXED BINARY(31));
+    DECLARE A(*) FIXED BINARY(31);
+    DECLARE (I, S) FIXED BINARY(31);
+    S = 0;
+    DO I = LBOUND(A, 1) TO HBOUND(A, 1);
+      S = S + A(I);
+    END;
+    RETURN(S);
+  END TOTAL;
+
+  FILL: PROCEDURE(A, K);
+    DECLARE A(*) FIXED BINARY(31);
+    DECLARE (K, I) FIXED BINARY(31);
+    DO I = LBOUND(A, 1) TO HBOUND(A, 1);
+      A(I) = K * I;
+    END;
+    PUT SKIP LIST('filled', DIM(A, 1), 'elements');
+  END FILL;
+
+  PUT SKIP LIST('total =', TOTAL(V));
+  CALL FILL(V, 10);
+  PUT SKIP LIST(V(3), V(4), V(7), TOTAL(V));
+END SP;

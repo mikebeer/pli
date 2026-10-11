@@ -92,6 +92,8 @@ struct Sym {
     Fn *owner;
     Scope *sc;
     int isparam, isref, rec, id, used, isfun, ext, isin;
+    char *pdecl;        /* C declaration of the parameter */
+    char *lbv, *hbv;    /* run-time bounds of a (*) parameter */
     int ispv;           /* parameter held as PV */
     int hasdim;
     int lblfn;
@@ -1893,6 +1895,7 @@ static void set_dims(Sym *s, Node *b)
     for (; b; b = b->next) {
         if (i >= MAXD) perr(b->line, "too many dimensions", s->name);
         if (b->fl) {
+            if (i > 0) perr(b->line, "only the first bound may be *", 0);
             s->star = 1;
             s->lo[i] = 1;
             s->hi[i] = 0;
@@ -2413,13 +2416,16 @@ static char *subtext(Sym *s, Node *args, int line, int *nu, char *t)
     if (n != s->nd) perr(line, "wrong number of subscripts:", s->name);
     for (i = 0, a = args; a; a = a->next, i++) {
         ix = cnum(a);
-        lo = itoa_(s->lo[i]);
-        if (subs_chk && !s->star && !s->isparam)
+        lo = (i == 0 && s->lbv) ? s->lbv : itoa_(s->lo[i]);
+        if (subs_chk && i == 0 && s->lbv)
+            ix = cat5("pl_ix(", ix, ", ", cat3(lo, ", ", s->hbv), ")");
+        else if (subs_chk && !s->star)
             ix = cat5("pl_ix(", ix, ", ", cat3(lo, ", ",
                       itoa_(s->hi[i])), ")");
         else
             ix = cat3("(long)(", ix, ")");
-        if (s->lo[i] != 0) ix = cat3(ix, " - ", lo);
+        if (s->lo[i] != 0 || (i == 0 && s->lbv))
+            ix = cat3(ix, " - ", lo);
         t = cat4(t, "[", ix, "]");
     }
     return t;
@@ -2545,6 +2551,11 @@ static char *argp(Sym *pm, Node *a)
     }
     if (pm->nd) {
         if (!x || !v.nu) perr(a->line, "array argument expected", 0);
+        if (pm->lbv) {
+            char *lo = x->lbv ? x->lbv : itoa_(x->lo[0]);
+            char *hi = x->hbv ? x->hbv : itoa_(x->hi[0]);
+            return cat5("(void *)", v.t, ", ", lo, cat2(", ", hi));
+        }
         return cat3("(void *)", v.t, "");
     }
     if (pm->ty == TY_STRUCT) {
@@ -2940,8 +2951,13 @@ static char *gbuiltin(Node *e, int *k)
         else if (s->nd > 1)
             perr(e->line, "dimension number needed", 0);
         if (d < 0 || d >= s->nd) perr(e->line, "bad dimension", 0);
-        if (s->star) perr(e->line, "bounds of * array unknown", 0);
         ge_q = 0;
+        if (d == 0 && s->lbv) {
+            if (n[0] == 'd')
+                return cat5("((double)(", s->hbv, " - ", s->lbv,
+                            " + 1))");
+            return cat3("((double)", n[0] == 'l' ? s->lbv : s->hbv, ")");
+        }
         if (n[0] == 'd') return itoa_(s->hi[d] - s->lo[d] + 1);
         return itoa_(n[0] == 'l' ? s->lo[d] : s->hi[d]);
     }
@@ -4223,11 +4239,18 @@ static char *param_decl(Sym *pm, Fn *f)
             el = is_long(pm) ? "long" : (pm->ty == TY_PTR ?
                                          "void *" : "double");
         }
+        if (pm->star) {
+            pm->lbv = mkcn("lb", pm->id, pm->name);
+            pm->hbv = mkcn("hb", pm->id, pm->name);
+        }
+        t[0] = 0;
+        if (pm->star)
+            sprintf(t, ", long %s, long %s", pm->lbv, pm->hbv);
         if (pm->nd == 1)
-            return is_str(pm) ?
+            return cat2(is_str(pm) ?
                 cat4(el, " (*", nm, cat2(")", sb_str(&b))) :
-                cat3(el, " *", nm);
-        return cat5(el, " (*", nm, ")", sb_str(&b));
+                cat3(el, " *", nm), t);
+        return cat2(cat5(el, " (*", nm, ")", sb_str(&b)), t);
     }
     if (pm->ty == TY_STRUCT) {
         pm->cn = nm;
@@ -4278,7 +4301,7 @@ static void gen_fn(Fn *f)
         for (pm = ps->params; pm; pm = pm->params) {
             if (!first) sb_s(&hdr, ", ");
             first = 0;
-            sb_s(&hdr, param_decl(pm, f));
+            sb_s(&hdr, pm->pdecl);
         }
         if (first) sb_s(&hdr, "void");
         sb_c(&hdr, ')');
@@ -4465,6 +4488,12 @@ int main(int argc, char **argv)
         }
     }
     if (!mainp) perr(1, "no main procedure", 0);
+    for (a = 0; a < nfn; a++)
+        if (!fnall[a]->ison) {
+            Sym *pm;
+            for (pm = fnall[a]->ps->params; pm; pm = pm->params)
+                pm->pdecl = param_decl(pm, fnall[a]);
+        }
     for (a = 0; a < nfn; a++) gen_fn(fnall[a]);
     for (a = 0; a < nfn; a++) asm_fn(fnall[a]);
     gen_init_fn();

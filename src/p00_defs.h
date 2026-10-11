@@ -90,6 +90,8 @@ struct Sym {
     Fn *owner;
     Scope *sc;
     int isparam, isref, rec, id, used, isfun, ext, isin;
+    char *pdecl;        /* C declaration of the parameter */
+    char *lbv, *hbv;    /* run-time bounds of a (*) parameter */
     int ispv;           /* parameter held as PV */
     int hasdim;
     int lblfn;

@@ -1,0 +1,31 @@
+/* qsort.pli -- quicksort; an array is passed to procedures */
+QS: PROCEDURE OPTIONS(MAIN);
+  DECLARE DATA(10) FIXED BINARY(31)
+          INITIAL(33, 5, 91, 12, 7, 64, 18, 2, 50, 27);
+  DECLARE I FIXED BINARY(31);
+
+  SORT: PROCEDURE(A, LO, HI) RECURSIVE;
+    DECLARE A(*) FIXED BINARY(31);
+    DECLARE (LO, HI) FIXED BINARY(31);
+    DECLARE (I, J, PIVOT, T) FIXED BINARY(31);
+    IF LO >= HI THEN RETURN;
+    PIVOT = A((LO + HI) / 2);
+    I = LO; J = HI;
+    DO WHILE (I <= J);
+      DO WHILE (A(I) < PIVOT); I = I + 1; END;
+      DO WHILE (A(J) > PIVOT); J = J - 1; END;
+      IF I <= J THEN DO;
+        T = A(I); A(I) = A(J); A(J) = T;
+        I = I + 1; J = J - 1;
+      END;
+    END;
+    CALL SORT(A, LO, J);
+    CALL SORT(A, I, HI);
+  END SORT;
+
+  CALL SORT(DATA, 1, 10);
+  DO I = 1 TO 10;
+    PUT EDIT(DATA(I)) (F(4));
+  END;
+  PUT SKIP;
+END QS;

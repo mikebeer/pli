@@ -1,0 +1,18 @@
+/* matrix.pli -- matrix product with two dimensional arrays */
+MATRIX: PROCEDURE OPTIONS(MAIN);
+  DECLARE A(2, 3) FIXED BINARY(31) INITIAL(1, 2, 3, 4, 5, 6);
+  DECLARE B(3, 2) FIXED BINARY(31) INITIAL(7, 8, 9, 10, 11, 12);
+  DECLARE C(2, 2) FIXED BINARY(31);
+  DECLARE (I, J, K) FIXED BINARY(31);
+  DO I = 1 TO 2;
+    DO J = 1 TO 2;
+      C(I, J) = 0;
+      DO K = 1 TO 3;
+        C(I, J) = C(I, J) + A(I, K) * B(K, J);
+      END;
+    END;
+  END;
+  DO I = 1 TO 2;
+    PUT SKIP EDIT(C(I, 1), C(I, 2)) (F(6), F(6));
+  END;
+END MATRIX;

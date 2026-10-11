@@ -1,0 +1,19 @@
+/* hanoi.pli -- towers of Hanoi with a recursive procedure */
+HANOI: PROCEDURE OPTIONS(MAIN);
+  DECLARE MOVES FIXED BINARY(31) INITIAL(0);
+
+  MOVE: PROCEDURE(N, FROM, TO, VIA) RECURSIVE;
+    DECLARE (N, FROM, TO, VIA) FIXED BINARY(31);
+    DECLARE NEXT FIXED BINARY(31);
+    IF N = 0 THEN RETURN;
+    NEXT = N - 1;
+    CALL MOVE(NEXT, FROM, VIA, TO);
+    MOVES = MOVES + 1;
+    IF N >= 3 THEN
+      PUT SKIP LIST('move disk', N, 'from', FROM, 'to', TO);
+    CALL MOVE(NEXT, VIA, TO, FROM);
+  END MOVE;
+
+  CALL MOVE(4, 1, 3, 2);
+  PUT SKIP LIST('total moves:', MOVES);
+END HANOI;

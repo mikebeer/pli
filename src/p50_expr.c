@@ -176,13 +176,16 @@ static char *subtext(Sym *s, Node *args, int line, int *nu, char *t)
     if (n != s->nd) perr(line, "wrong number of subscripts:", s->name);
     for (i = 0, a = args; a; a = a->next, i++) {
         ix = cnum(a);
-        lo = itoa_(s->lo[i]);
-        if (subs_chk && !s->star && !s->isparam)
+        lo = (i == 0 && s->lbv) ? s->lbv : itoa_(s->lo[i]);
+        if (subs_chk && i == 0 && s->lbv)
+            ix = cat5("pl_ix(", ix, ", ", cat3(lo, ", ", s->hbv), ")");
+        else if (subs_chk && !s->star)
             ix = cat5("pl_ix(", ix, ", ", cat3(lo, ", ",
                       itoa_(s->hi[i])), ")");
         else
             ix = cat3("(long)(", ix, ")");
-        if (s->lo[i] != 0) ix = cat3(ix, " - ", lo);
+        if (s->lo[i] != 0 || (i == 0 && s->lbv))
+            ix = cat3(ix, " - ", lo);
         t = cat4(t, "[", ix, "]");
     }
     return t;
@@ -308,6 +311,11 @@ static char *argp(Sym *pm, Node *a)
     }
     if (pm->nd) {
         if (!x || !v.nu) perr(a->line, "array argument expected", 0);
+        if (pm->lbv) {
+            char *lo = x->lbv ? x->lbv : itoa_(x->lo[0]);
+            char *hi = x->hbv ? x->hbv : itoa_(x->hi[0]);
+            return cat5("(void *)", v.t, ", ", lo, cat2(", ", hi));
+        }
         return cat3("(void *)", v.t, "");
     }
     if (pm->ty == TY_STRUCT) {
