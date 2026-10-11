@@ -1,0 +1,18 @@
+/* ON-units and conditions */
+ONS: PROCEDURE OPTIONS(MAIN);
+  DECLARE (A, B, C) FIXED BINARY(31);
+  DECLARE FAILED BIT(1) INITIAL('0'B);
+  ON ZERODIVIDE BEGIN;
+    PUT SKIP LIST('zero divide trapped');
+    FAILED = '1'B;
+  END;
+  A = 10; B = 0;
+  C = A / B;
+  PUT SKIP LIST('after divide', C);
+  IF FAILED THEN PUT SKIP LIST('flag set');
+  ON ERROR GO TO BAIL;
+  SIGNAL ERROR;
+  PUT SKIP LIST('not reached');
+BAIL:
+  PUT SKIP LIST('recovered at BAIL');
+END ONS;

@@ -1,0 +1,19 @@
+/* list-directed input from standard input */
+GL: PROCEDURE OPTIONS(MAIN);
+  DECLARE (A, B, SUM) FIXED BINARY(31);
+  DECLARE X FLOAT DECIMAL(6);
+  DECLARE NAME CHAR(10) VARYING;
+  DECLARE DONE BIT(1) INITIAL('0'B);
+  ON ENDFILE(SYSIN) DONE = '1'B;
+  GET LIST(A, B);
+  PUT SKIP LIST('A =', A, 'B =', B, 'A+B =', A + B);
+  GET LIST(X, NAME);
+  PUT SKIP LIST(X, NAME);
+  SUM = 0;
+  GET LIST(A);
+  DO WHILE (^DONE);
+    SUM = SUM + A;
+    GET LIST(A);
+  END;
+  PUT SKIP LIST('sum of the rest =', SUM);
+END GL;

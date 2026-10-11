@@ -1,0 +1,29 @@
+/* structures */
+STRUC: PROCEDURE OPTIONS(MAIN);
+  DECLARE 1 EMP,
+            2 NAME CHAR(10),
+            2 AGE FIXED BINARY(15),
+            2 PAY,
+              3 BASE FIXED DECIMAL(7, 2),
+              3 BONUS FIXED DECIMAL(7, 2);
+  DECLARE 1 STAFF(3),
+            2 ID FIXED BINARY(31),
+            2 TAG CHAR(4);
+  DECLARE 1 COPY LIKE EMP;
+  DECLARE I FIXED BINARY(31);
+  EMP.NAME = 'Smith';
+  EMP.AGE = 41;
+  EMP.PAY.BASE = 2500.50;
+  EMP.BONUS = 300;
+  PUT SKIP LIST(EMP.NAME, EMP.AGE, EMP.BASE + EMP.BONUS);
+  COPY = EMP;
+  COPY.AGE = 42;
+  PUT SKIP LIST(COPY.NAME, COPY.AGE, EMP.AGE);
+  DO I = 1 TO 3;
+    STAFF(I).ID = I * 100;
+    STAFF(I).TAG = 'T' || I;
+  END;
+  DO I = 1 TO 3;
+    PUT SKIP LIST(STAFF(I).ID, STAFF(I).TAG);
+  END;
+END STRUC;

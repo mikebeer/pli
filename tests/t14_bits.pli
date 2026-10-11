@@ -1,0 +1,26 @@
+/* bit strings and logical operators */
+BITS: PROCEDURE OPTIONS(MAIN);
+  DECLARE (X, Y, Z) BIT(8);
+  DECLARE F BIT(1);
+  DECLARE N FIXED BINARY(31);
+  X = '11001010'B;
+  Y = '10101100'B;
+  Z = X & Y;
+  PUT SKIP LIST(Z);
+  Z = X | Y;
+  PUT SKIP LIST(Z);
+  Z = ^X;
+  PUT SKIP LIST(Z);
+  F = X = Y;
+  PUT SKIP LIST(F);
+  F = X ^= Y;
+  PUT SKIP LIST(F);
+  N = 5;
+  IF N > 3 & N < 10 THEN PUT SKIP LIST('in range');
+  IF N < 3 | N > 4 THEN PUT SKIP LIST('or works');
+  IF ^(N = 5) THEN PUT SKIP LIST('wrong');
+  ELSE PUT SKIP LIST('not-equal false');
+  PUT SKIP LIST(LENGTH(X), SUBSTR(X, 1, 3));
+  Z = '1'B;
+  PUT SKIP LIST(Z);
+END BITS;

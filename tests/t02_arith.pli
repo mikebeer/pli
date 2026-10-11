@@ -1,0 +1,25 @@
+/* arithmetic, fixed decimal scales, built-in numeric functions */
+ARITH: PROCEDURE OPTIONS(MAIN);
+  DECLARE (A, B) FIXED DECIMAL(7,2);
+  DECLARE N FIXED BINARY(31);
+  DECLARE X FLOAT DECIMAL(6);
+  A = 10.50;
+  B = 3.25;
+  PUT SKIP LIST('A+B =', A + B);
+  PUT SKIP LIST('A-B =', A - B);
+  PUT SKIP LIST('A*B =', A * B);
+  PUT SKIP LIST('A/B =', A / B);
+  N = 17;
+  PUT SKIP LIST(N / 5, MOD(N, 5), MOD(-7, 3), REM(-7, 3));
+  PUT SKIP LIST(FLOOR(-2.5), CEIL(-2.5), TRUNC(-2.5), TRUNC(2.5));
+  PUT SKIP LIST(ROUND(2.567, 2), ROUND(-2.5, 0), SIGN(-9), ABS(-4));
+  PUT SKIP LIST(MAX(3, 9, 4), MIN(3, 9, 4), SQRT(144), 2 ** 8);
+  X = 1.5;
+  PUT SKIP LIST(X, X * 2, SQRT(2.0));
+  N = 7;
+  N = N / 2;
+  PUT SKIP LIST('7/2 stored in integer =', N);
+  A = 1.999;
+  PUT SKIP LIST('truncated to two places =', A);
+  PUT SKIP LIST(-3 ** 2, (-3) ** 2, 2 ** 3 ** 2);
+END ARITH;

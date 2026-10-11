@@ -1,0 +1,27 @@
+/* based storage: a linked list */
+LIST: PROCEDURE OPTIONS(MAIN);
+  DECLARE 1 NODE BASED(P),
+            2 VAL FIXED BINARY(31),
+            2 NEXT POINTER;
+  DECLARE (P, HEAD, Q) POINTER;
+  DECLARE I FIXED BINARY(31);
+  HEAD = NULL;
+  DO I = 1 TO 5;
+    ALLOCATE NODE;
+    P->VAL = I * I;
+    P->NEXT = HEAD;
+    HEAD = P;
+  END;
+  Q = HEAD;
+  DO WHILE (Q ^= NULL);
+    PUT SKIP LIST(Q->VAL);
+    Q = Q->NEXT;
+  END;
+  Q = HEAD;
+  DO WHILE (Q ^= NULL);
+    P = Q->NEXT;
+    FREE Q->NODE;
+    Q = P;
+  END;
+  PUT SKIP LIST('freed');
+END LIST;

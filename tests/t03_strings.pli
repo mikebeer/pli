@@ -1,0 +1,27 @@
+/* character string handling */
+STRINGS: PROCEDURE OPTIONS(MAIN);
+  DECLARE S CHAR(20) VARYING;
+  DECLARE T CHAR(10);
+  DECLARE I FIXED BINARY(31);
+  S = 'PL/I is fun';
+  PUT SKIP LIST(LENGTH(S), SUBSTR(S, 1, 4), SUBSTR(S, 6));
+  PUT SKIP LIST(INDEX(S, 'is'), INDEX(S, 'zz'));
+  PUT SKIP LIST(VERIFY('12345', '0123456789'),
+                VERIFY('12a45', '0123456789'));
+  PUT SKIP LIST(TRANSLATE('hello', 'HL', 'hl'));
+  PUT SKIP LIST(REPEAT('ab', 2), REVERSE('abc'));
+  PUT SKIP LIST(UPPERCASE('Mixed'), LOWERCASE('Mixed'), TRIM('  x  '));
+  T = 'abc';
+  PUT SKIP LIST('[' || T || ']', LENGTH(T));
+  SUBSTR(T, 2, 2) = 'ZZ';
+  PUT SKIP LIST(T);
+  IF 'abc' < 'abd' THEN PUT SKIP LIST('less');
+  IF 'ab' = 'ab   ' THEN PUT SKIP LIST('blank padded equal');
+  S = '';
+  DO I = 1 TO 5;
+    S = S || 'x';
+  END;
+  PUT SKIP LIST(S, LENGTH(S));
+  S = 'a' || 12 || 'b';
+  PUT SKIP LIST(S);
+END STRINGS;
