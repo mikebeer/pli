@@ -34,12 +34,6 @@ typedef struct { char *p; long *np; long max; } PV; /* variable */
 #define PLC_PAGE 12
 #define PLC_N    13
 
-static void (*pl_hd[PLC_N])(void);
-static int pl_hb[PLC_N];
-static long pl_oncode = 0;
-static int pl_gtsel = 0;
-static int pl_argc = 0;
-static char **pl_argv = 0;
 
 /* ---- files ---- */
 typedef struct PLF {
@@ -62,10 +56,6 @@ typedef struct PLF {
 #define PLF_PRT 4
 #define PLF_REC 8
 
-static PLF pl_sysin;
-static PLF pl_sysprt;
-static PLF *pl_fl[64];
-static int pl_nfl = 0;
 
 /* ---- temporary string arena ---- */
 typedef struct plch {
@@ -74,7 +64,47 @@ typedef struct plch {
     double d[1];
 } plch;
 typedef struct { plch *c; long u; } PLM;
-static plch *pl_ar = 0;
+
+
+/* ---- shared state ----
+ * All run-time state is in one structure, so that separately
+ * compiled modules share it.  Whole-program translation has one
+ * static copy; module translation (-M) has one external object
+ * "plg", defined in the module that has main (PLI_DEFG) or in plirt.c.
+ */
+typedef struct PLGS_ {
+    void (*hd[PLC_N])(void);
+    int hb[PLC_N];
+    long oncode;
+    int gtsel, argc;
+    char **argv;
+    PLF sysin, sysprt;
+    PLF *fl[64];
+    int nfl;
+    plch *ar;
+    int findone;
+    unsigned long rnd;
+} PLGS;
+#ifdef PLI_MODULE
+#ifdef PLI_DEFG
+PLGS plg;
+#else
+extern PLGS plg;
+#endif
+#else
+static PLGS plg;
+#endif
+#define pl_hd plg.hd
+#define pl_hb plg.hb
+#define pl_oncode plg.oncode
+#define pl_gtsel plg.gtsel
+#define pl_argc plg.argc
+#define pl_argv plg.argv
+#define pl_sysin plg.sysin
+#define pl_sysprt plg.sysprt
+#define pl_fl plg.fl
+#define pl_nfl plg.nfl
+#define pl_ar plg.ar
 
 static void pl_stop(int rc);
 static void pl_sig(int c, const char *m);
@@ -151,9 +181,8 @@ static void pl_onf(PLF *f, void (*h)(void))
 
 static void pl_fin(void)
 {
-    static int done = 0;
-    if (!done && pl_hd[PLC_FIN]) {
-        done = 1;
+    if (!plg.findone && pl_hd[PLC_FIN]) {
+        plg.findone = 1;
         pl_hd[PLC_FIN]();
     }
 }
@@ -363,9 +392,12 @@ static double pl_prodl(const long *a, long n)
 
 static double pl_rnd(double seed)
 {
-    static unsigned long st = 12345UL;
+    unsigned long st;
+    if (!plg.rnd) plg.rnd = 12345UL;
+    st = plg.rnd;
     if (seed > 0.0) st = (unsigned long)seed % 2147483647UL + 1UL;
     st = (st * 1103515245UL + 12345UL) & 0x7fffffffUL;
+    plg.rnd = st;
     return (double)st / 2147483648.0;
 }
 
@@ -413,6 +445,28 @@ static PS pl_ps(PV v)
     PS r;
     r.p = v.p;
     r.n = v.np ? *v.np : v.max;
+    return r;
+}
+
+/* NUL-terminated copy of a string, for a C function */
+static const char *pl_cstr(PS s)
+{
+    char *p = (char *)pl_ta(s.n + 1);
+    if (s.n > 0) memcpy(p, s.p, (size_t)s.n);
+    p[s.n] = 0;
+    return p;
+}
+
+/* a string returned by a C function, as a PL/I value */
+static PS pl_fromc(const char *c)
+{
+    PS r;
+    long n = c ? (long)strlen(c) : 0;
+    char *p = (char *)pl_ta(n + 1);
+    if (n > 0) memcpy(p, c, (size_t)n);
+    p[n] = 0;
+    r.p = p;
+    r.n = n;
     return r;
 }
 

@@ -344,6 +344,49 @@ static Node *p_initlist(void)
     return h;
 }
 
+static void p_attrs(Attr *a);
+
+/* ENTRY(desc, desc, ...): one attribute list per parameter */
+static void p_entry_desc(Attr *a)
+{
+    Attr *d, *last = 0;
+    expop("(");
+    a->hasdsc = 1;
+    if (isop(")")) { nxt(); return; }
+    for (;;) {
+        d = (Attr *)xalloc((long)sizeof(Attr));
+        d->len = -2;
+        d->p = -1;
+        d->q = -1;
+        if (isop("*")) {
+            nxt();
+        } else {
+            if (isop("(")) d->dims = p_dims();
+            p_attrs(d);
+        }
+        if (last) last->dnext = d; else a->dsc = d;
+        last = d;
+        if (isop(",")) { nxt(); continue; }
+        break;
+    }
+    expop(")");
+}
+
+/* OPTIONS(...) : only C and MAIN are looked at */
+static int p_options(void)
+{
+    int fl = 0;
+    expop("(");
+    while (!isop(")")) {
+        if (isid("main")) fl |= 2;
+        if (isid("c")) fl |= 4;
+        if (TK.k == T_EOF) perr(TK.line, "expected )", 0);
+        nxt();
+    }
+    nxt();
+    return fl;
+}
+
 static void p_attrs(Attr *a)
 {
     char *k;
@@ -380,7 +423,8 @@ static void p_attrs(Attr *a)
         } else if (!strcmp(k, "label")) {
             nxt(); a->ty = TY_LBL; skipparens();
         } else if (!strcmp(k, "entry")) {
-            nxt(); a->isent = 1; skipparens();
+            nxt(); a->isent = 1;
+            if (isop("(")) p_entry_desc(a);
         } else if (!strcmp(k, "returns")) {
             nxt(); expop("(");
             a->ret = (Attr *)xalloc((long)sizeof(Attr));
@@ -399,7 +443,16 @@ static void p_attrs(Attr *a)
                 expop(")");
             }
         } else if (!strcmp(k, "external") || !strcmp(k, "ext")) {
-            nxt(); a->ext = 1; skipparens();
+            nxt(); a->ext = 1;
+            if (isop("(")) {
+                if (tokens.a[ptk + 1].k == T_STR) {
+                    a->xname = xdup(tokens.a[ptk + 1].s);
+                    ptk += 2;
+                    expop(")");
+                } else {
+                    skipparens();
+                }
+            }
         } else if (!strcmp(k, "internal") || !strcmp(k, "int")) {
             nxt();
         } else if (!strcmp(k, "initial") || !strcmp(k, "init")) {
@@ -424,8 +477,10 @@ static void p_attrs(Attr *a)
         else if (!strcmp(k, "input")) { nxt(); a->mode = 1; }
         else if (!strcmp(k, "output")) { nxt(); a->mode = 2; }
         else if (!strcmp(k, "update")) { nxt(); a->mode = 3; }
-        else if (!strcmp(k, "environment") || !strcmp(k, "env") ||
-                 !strcmp(k, "options")) {
+        else if (!strcmp(k, "options")) {
+            nxt();
+            if (p_options() & 4) a->copt = 1;
+        } else if (!strcmp(k, "environment") || !strcmp(k, "env")) {
             nxt(); skipparens();
         } else if (!strcmp(k, "complex") || !strcmp(k, "cplx") ||
                    !strcmp(k, "defined") || !strcmp(k, "def") ||
@@ -821,12 +876,7 @@ static Node *p_proc(int line)
         k = expid();
         if (!strcmp(k, "recursive")) n->fl |= 1;
         else if (!strcmp(k, "options")) {
-            expop("(");
-            while (!isop(")")) {
-                if (isid("main")) n->fl |= 2;
-                nxt();
-            }
-            nxt();
+            n->fl |= p_options();
         } else if (!strcmp(k, "returns")) {
             expop("(");
             at->ret = (Attr *)xalloc((long)sizeof(Attr));
@@ -834,6 +884,12 @@ static Node *p_proc(int line)
             at->ret->p = -1;
             at->ret->q = -1;
             p_attrs(at->ret);
+            expop(")");
+        } else if (!strcmp(k, "external") && isop("(") &&
+                   TK1.k == T_STR) {
+            at->ext = 1;
+            at->xname = xdup(TK1.s);
+            ptk += 2;
             expop(")");
         } else if (!strcmp(k, "external") || !strcmp(k, "internal") ||
                    !strcmp(k, "reorder") || !strcmp(k, "order") ||

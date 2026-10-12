@@ -48,6 +48,20 @@ const EXM = (fig, cap, files) => {
   files.forEach((f) => { lines.push('/* ' + f.split('/').pop() + ' */'); lines.push(...FILE(f), ''); });
   return CODE(fig, cap, lines.concat(['/* pli ' + names + ' */', '/* prints */']).concat(out.replace(/\n+$/, '').split('\n')));
 };
+// separately compiled modules (and C files) built with -M -c
+const EXMOD = (fig, cap, files, cmd) => {
+  const d = fs.mkdtempSync('/tmp/plrun-');
+  files.forEach((f) => fs.copyFileSync(REPO + f, d + '/' + f.split('/').pop()));
+  const names = files.map((f) => f.split('/').pop()).join(' ');
+  let out;
+  try {
+    out = sh('cd ' + d + ' && ' + REPO + 'pli ' + cmd.replace('FILES', names) + ' -o s 2>&1 && timeout 10 ./s 2>&1 | head -40');
+  } catch (e) { out = 'ERROR ' + e.message; }
+  sh('rm -rf ' + d);
+  const lines = [];
+  files.forEach((f) => { lines.push('/* ' + f.split('/').pop() + ' */'); lines.push(...FILE(f), ''); });
+  return CODE(fig, cap, lines.concat(['$ pli ' + cmd.replace('FILES', names) + ' -o prog', '/* prints */']).concat(out.replace(/\n+$/, '').split('\n')));
+};
 const EX = (fig, cap, f, input) => CODE(fig, cap, FILE(f).concat(['', '/* prints */']).concat(RUN(f, input)));
 
 /* ------------------------------------------------------------------ Preface */
@@ -128,6 +142,7 @@ add(
   H2('Building the program in one step'),
   P('With the option `-c` the translator also builds the program. It looks for a C compiler in this order: the one named by `-cc`, the command in the environment variable `PLI_CC`, then `gcc`, `cc`, `clang`, `tcc` and on Windows `cl` from the path, and last the TinyCC in the directory `tcc` next to `pli`. `-cc bundled` forces the bundled compiler. `-o` names the program, and the C file is kept next to the source. Example: `pli -c examples/sieve.pli -o sieve`. TinyCC is distributed under the GNU Lesser General Public License; its licence text is in the `tcc` directory.'),
   H2('The command line'),
+  P('A source name without a file type gets the type `pli`: `pli matrix` reads `matrix.pli` on Linux and Windows, and `matrix PLI` on CMS. The C file is `matrix.c` (`MATRIX C` on CMS), and with `-c` the program is `matrix` (`matrix.exe` on Windows).'),
   TABLE('opts', 'Translator options', [1700, 7938],
     ['Option', 'Meaning'],
     [
@@ -135,6 +150,7 @@ add(
       ['`-m l,r`', 'Source margins. Only columns ~l~ to ~r~ of every source line are read, as with the MARGINS option of the F compiler: `-m 2,72` ignores column 1 and everything after column 72. The default reads the whole line.'],
       ['`-c`', 'Translate and then build the program with a C compiler. `-o` then names the program, not the C file.'],
       ['`-cc name`', 'The C compiler for `-c`: a command such as `gcc`, or `bundled` for the TinyCC next to `pli`.'],
+      ['`-M`, `-C`, `-n`, `-with`', 'Separate compilation; see Chapter 4.'],
       ['`-s`', 'Check array subscripts at run time and raise SUBSCRIPTRANGE. The prefix `(SUBSCRIPTRANGE):` on a procedure does the same for that procedure alone.'],
     ]),
   P('The return code is 0 when the translation succeeded, 8 when an error was found in the source, and 4 for a usage error.'),
@@ -430,7 +446,45 @@ add(
   P('A program may be spread over several source files, which the translator reads together: `pli main.pli util.pli -c -o prog`. The files make one program, so a procedure in one file can call a procedure of any other, and the order of the files does not matter. Exactly one procedure may have OPTIONS(MAIN). Error messages name the file.'),
   P('A call to a procedure in another file is best declared with an ENTRY declaration, `DECLARE SQUARE ENTRY(FIXED BINARY(31)) RETURNS(FIXED BINARY(31));`, as in PL/I; the translator then finds the procedure of that name. The parameter descriptions in the ENTRY declaration are accepted but not checked against the procedure. A variable that is shared between files is declared `EXTERNAL` in every file that uses it; there is one copy of it, and it may be declared inside a procedure or outside. If several declarations have an INITIAL attribute, the first one wins. EXTERNAL structures are not shared.'),
   EXM('modules', 'A program of two source files', ['examples/modules/main.pli', 'examples/modules/util.pli']),
-  P('This is whole-program translation. The files are not compiled separately and there are no object modules, so a change to one file means translating them all again. Because the result is one C file, it needs no linker features beyond those of a single program, and it builds the same way on CMS.'),
+  P('This is whole-program translation. The files are not compiled separately, so a change to one file means translating them all again. Because the result is one C file, it needs no linker features beyond those of a single program, and it builds the same way on CMS. The next section shows how to compile the files separately.'),
+  H2('Separate compilation'),
+  P('Whole-program translation needs all the sources at once. With the option `-M` every source file becomes a ~module~: it is translated to a C file of its own, which is compiled to an object file and linked with the others. A change to one file means translating and compiling that file only, and the linker puts the pieces together.'),
+  TABLE('modopts', 'Options for modules', [1900, 7738],
+    ['Option', 'Meaning'],
+    [
+      ['`-M`', 'Translate each source file as a module. Every file gives a C file of its own, next to the source.'],
+      ['`-C`', 'Also compile the C files to object files (`.o`), but do not link.'],
+      ['`-c`', 'Compile and link. `.c`, `.o` and `.obj` files on the command line are passed to the C compiler as well, so C files can be part of the program.'],
+      ['`-n name`', 'The module name. The default is the file name without directory and type.'],
+      ['`-with a,b`', 'The names of the other modules of the program. Needed only when the module with the main program is translated alone.'],
+    ]),
+  P('A procedure at the outermost level of a module is ~external~: other modules can call it. Its C name is its PL/I name in lower case, or the name given by `EXTERNAL(\'name\')` on the PROCEDURE statement. On CMS an external name may have at most 8 characters, and a module name at most 6. The procedure with OPTIONS(MAIN) is the main program and is not external. Procedures inside other procedures are always internal.'),
+  P('A module that calls an external procedure of another module declares it with ENTRY, giving the attributes of the parameters and of the result. The declaration must agree with the procedure; the translator uses it to build the call and cannot check it against the other module. In a module a variable can be shared the same way with EXTERNAL: the declaration at the outermost level, outside every procedure, ~defines~ the variable, and a declaration inside a procedure ~refers~ to it. Exactly one module defines a variable.'),
+  EXMOD('sepmod', 'Two modules, translated and linked separately', ['examples/modules/main.pli', 'examples/modules/util.pli'], '-M -c FILES'),
+  P('The commands `pli -M -C util.pli` and `pli -M -c -with util main.pli util.o` do the same in two steps, and the second step needs only the object file of `util`.'),
+  P('All modules share one run-time state: the condition handlers, the standard files, the string work area. The state is one external object, `plg`, defined in the module that has the main program. A program without a PL/I main program, whose main program is written in C, gets it from a small file `plrt_.c` that `pli` adds. Each module also has an initialization function `name_i`, which sets up the INITIAL values of its variables and which the main module calls first.'),
+  H2('Calling C from PL/I'),
+  P('A C function is declared in PL/I with ENTRY and OPTIONS(C). A name given by `EXTERNAL(\'name\')` is the C name; without it the PL/I name in lower case is used. The C function is then called like any PL/I procedure, and the arguments are passed the way C expects them: numbers by value, strings as `char` pointers.'),
+  TABLE('cconv', 'Parameters and results of an OPTIONS(C) ENTRY', [3300, 6338],
+    ['PL/I attributes', 'C type'],
+    [
+      ['`FIXED BINARY(p)`, p up to 15', '`short`'],
+      ['`FIXED BINARY(p)`, p from 16 to 31', '`int`'],
+      ['`FIXED DECIMAL(p)`, p up to 9, no fraction', '`int`'],
+      ['other `FIXED DECIMAL`', '`double`'],
+      ['`FLOAT BINARY(p)`, p up to 24, and `FLOAT DECIMAL(p)`, p up to 7', '`float`. A plain `FLOAT` is `FLOAT DECIMAL(6)`.'],
+      ['`FLOAT BINARY(53)` and larger', '`double`'],
+      ['`POINTER`', '`void *`'],
+      ['`CHARACTER`, `BIT`', '`const char *`, a copy of the string with a NUL at the end. A string result is copied back into a PL/I string.'],
+      ['an array', 'the address of the first element, `double *` for FLOAT and `long *` for FIXED. `(*)` is allowed and gives no bounds.'],
+      ['a structure', 'the address of the structure.'],
+    ]),
+  P('To let a C function change a variable, pass its address: `ADDR(X)` is a `POINTER`. Functions of the C library that the generated program already includes headers for, such as `sqrt`, `strlen`, `abs` and `atoi`, are called with the prototypes of the library.'),
+  EXMOD('callc', 'Calling the C library', ['examples/cinterop/callc.pli'], '-c FILES'),
+  H2('Calling PL/I from C'),
+  P('A PL/I procedure that C code is to call is written with OPTIONS(C), usually together with `EXTERNAL(\'name\')`, and its parameters then follow the same table: numbers arrive by value and strings as NUL-terminated pointers. A string parameter has the length of the C string. A result must be a number or a pointer, not a string. An array parameter needs explicit bounds.'),
+  P('The program is built with `-M`, because the PL/I part is a module. The C main program starts the run-time system with `plstart(argc, argv)`, calls the initialization function `name_i` of every PL/I module, and ends with `plstop(rc)`. The line that a PUT SKIP statement began stays open until the next PUT SKIP, so write a newline from C before you print on the same output.'),
+  EXMOD('cmain', 'A C main program calling PL/I', ['examples/cinterop/lib.pli', 'examples/cinterop/cmain.c'], '-M -c FILES'),
   H2('The preprocessor'),
   P('Two preprocessor statements are executed while the source is read. `%REPLACE name BY value;` replaces every later occurrence of the identifier ~name~ by a number or string. `%INCLUDE name;` inserts the text of the file ~name~ at this point: the translator looks for `name`, `name.inc`, `name.pli`, and then in the directory of the including file. Includes may be nested to 8 levels. The statements %PAGE, %SKIP, %NOPRINT and %NOTE are accepted and ignored.'),
   DEMO('macro', '%REPLACE', [
@@ -793,7 +847,9 @@ add(
     'MAX and MIN take scalars only; SUM and PROD take numeric arrays.',
     'The preprocessor knows only %REPLACE and %INCLUDE. A %REPLACE replaces identifiers by a number or a string.',
     'GET DATA, REWRITE, keyed access and the options KEY, KEYFROM and KEYTO are not available. READ INTO an array is not supported.',
-    'Source files are translated together; there is no separate compilation and no linking of object modules.',
+    'Without `-M` the source files are translated together. With `-M` the modules are compiled separately, but the parameters of an ENTRY are not checked against the procedure in the other module.',
+    'C functions are called with numbers, strings and addresses only. Structures and arrays are passed by address, FIXED arrays as `long`.',
+    'A PL/I string cannot be the result of a procedure that C calls.',
     'A DO with several specifications cannot have labels inside its body that a GOTO from outside jumps to.',
     'The CMS build is untested: the translator and its output follow C89 and are checked for line length, but have not been compiled with GCC for VM/370.',
   ),

@@ -55,7 +55,10 @@ struct Attr {
     Node *based, *init;
     char *like;
     Attr *ret;
-    Node *entry;        /* ENTRY parameter attribute list (unused) */
+    char *xname;        /* EXTERNAL('name') */
+    int copt, hasdsc;   /* OPTIONS(C); ENTRY has a parameter list */
+    Attr *dsc, *dnext;  /* ENTRY parameter descriptions */
+    Node *dims;         /* bounds of a described parameter */
 };
 
 struct Node {
@@ -96,6 +99,13 @@ struct Sym {
     int hasdim;
     int lblfn;
     int fprt, frec, fmode;
+    char *xname;        /* external C name given by EXTERNAL('x') */
+    int copt;           /* OPTIONS(C): C calling convention */
+    int isextp;         /* external procedure (module mode) */
+    int isextv;         /* reference to an external variable */
+    int protodone;      /* prototype written */
+    int hasdsc;         /* ENTRY with a parameter list */
+    char *cpar;         /* C parameter of an OPTIONS(C) procedure */
 };
 
 struct Scope {
@@ -110,6 +120,7 @@ struct Fn {
     Sb decl, body, pro, hdr, ep;
     int rec, id, depth, ison;
     int jb;             /* needs setjmp */
+    int ext;            /* exported (module mode) */
     Sym *ps;            /* procedure symbol */
     Node *node;
     Fn *par;

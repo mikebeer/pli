@@ -10,6 +10,28 @@ static int nfn = 0;
 static Sym *statinit[2048];
 static int nstat = 0;
 static int opt_subs = 0;
+static int modmode = 0;         /* -M: separately compiled module */
+static char *modbase = "";      /* module name (init function) */
+static char *withmods[32];      /* names of the other modules */
+static int nwith = 0;
+
+static char *cident(const char *name);
+
+/* the C name of an external procedure or variable */
+static char *extname(const char *name, const char *xname, int line)
+{
+    char *n = xname ? xdup(xname) : cident(name);
+    char *q;
+    if (!xname)
+        for (q = n; *q; q++) *q = (char)tolower((unsigned char)*q);
+#ifdef PLI_CMS
+    if (strlen(n) > 8)
+        perr(line, "external name longer than 8 characters:", n);
+#else
+    (void)line;
+#endif
+    return n;
+}
 
 static Scope *newscope(Scope *par, Fn *fn, Node *n)
 {
@@ -97,6 +119,55 @@ static int is_long(Sym *s)
 {
     return s->ty == TY_FXB || (s->ty == TY_FXD && s->q == 0 &&
                                s->p <= 9);
+}
+
+/* functions declared by the C headers that plirt.h includes: a
+   prototype of our own would conflict with the real one */
+static int is_libc(const char *n)
+{
+    static const char *names[] = {
+        "remove", "rename", "tmpfile", "tmpnam", "fclose", "fflush",
+        "fopen", "freopen", "setbuf", "setvbuf", "fprintf", "fscanf",
+        "printf", "scanf", "sprintf", "sscanf", "vfprintf", "vprintf",
+        "vsprintf", "fgetc", "fgets", "fputc", "fputs", "getc",
+        "getchar", "gets", "putc", "putchar", "puts", "ungetc",
+        "fread",
+        "fwrite", "fgetpos", "fseek", "fsetpos", "ftell", "rewind",
+        "clearerr", "feof", "ferror", "perror", "atof", "atoi", "atol",
+        "strtod", "strtol", "strtoul", "rand", "srand", "calloc",
+        "free", "malloc", "realloc", "abort", "atexit", "exit",
+        "getenv", "system", "bsearch", "qsort", "abs", "div", "labs",
+        "ldiv", "memcpy", "memmove", "strcpy", "strncpy", "strcat",
+        "strncat", "memcmp", "strcmp", "strcoll", "strncmp", "strxfrm",
+        "memchr", "strchr", "strcspn", "strpbrk", "strrchr", "strspn",
+        "strstr", "strtok", "memset", "strerror", "strlen", "acos",
+        "asin", "atan", "atan2", "cos", "sin", "tan", "cosh", "sinh",
+        "tanh", "exp", "frexp", "ldexp", "log", "log10", "modf", "pow",
+        "sqrt", "ceil", "fabs", "floor", "fmod", "clock", "difftime",
+        "mktime", "time", "asctime", "ctime", "gmtime", "localtime",
+        "strftime", "isalnum", "isalpha", "iscntrl", "isdigit",
+        "isgraph", "islower", "isprint", "ispunct", "isspace",
+        "isupper", "isxdigit", "tolower", "toupper", "longjmp", 0
+    };
+    int i;
+    for (i = 0; names[i]; i++)
+        if (!strcmp(names[i], n)) return 1;
+    return 0;
+}
+
+/* C type of a scalar passed by value to or from a C function */
+static const char *ctype_of(Sym *s)
+{
+    switch (s->ty) {
+    case TY_FXB: return s->p <= 15 ? "short" : "int";
+    case TY_FXD:
+        return (s->q == 0 && s->p <= 9) ? "int" : "double";
+    case TY_FLT: return s->p <= 7 ? "float" : "double";
+    case TY_PTR: return "void *";
+    case TY_CHR: case TY_BIT: return "const char *";
+    case TY_VOID: return "void";
+    }
+    return "double";
 }
 
 static int is_num(Sym *s)
@@ -299,6 +370,21 @@ static void emit_storage(Sym *s)
         return;
     }
     s->cn = mkcn("v", s->id, s->name);
+    if (modmode && s->ext && s->stor != ST_BASED &&
+        s->stor != ST_CTL && s->ty != TY_STRUCT) {
+        /* EXTERNAL variable: defined at the outermost level of one
+           module, referred to (extern) from inside procedures */
+        s->cn = extname(s->name, s->xname, 0);
+        sb_s(&gdecl, cat4("typedef ", decl_text(s, s->tn), ";", "\n"));
+        if (s->isextv) {
+            sb_s(&gdecl, cat5("extern ", s->tn, " ", s->cn, ";\n"));
+            return;
+        }
+        sb_s(&gdecl, cat5("", s->tn, " ", s->cn, ";\n"));
+        if (nstat >= 2048) die("too many variables");
+        statinit[nstat++] = s;
+        return;
+    }
     sb_s(&gdecl, cat4("typedef ", decl_text(s, s->tn), ";", "\n"));
     if (s->stor == ST_BASED) return;
     if (s->stor == ST_CTL) {
@@ -336,9 +422,33 @@ static void setup_sym(Sym *s, Node *it, Scope *sc)
         s->ty = TY_STRUCT;
         copy_kids(s, l, sc);
     }
+    s->xname = a->xname;
     if (a->isent) {
         s->cls = C_PROC;
         s->pn = 0;
+        s->isextp = 1;
+        s->copt = a->copt;
+        s->cn = extname(s->name, a->xname, it->line);
+        if (a->hasdsc) {
+            Scope *ns = newscope(sc, 0, 0);
+            Attr *d;
+            Sym *p, *pt = 0;
+            char nm[16];
+            int i = 0;
+            s->hasdsc = 1;
+            for (d = a->dsc; d; d = d->dnext) {
+                sprintf(nm, "d%d", ++i);
+                p = newsym(ns, nm, C_VAR);
+                p->isparam = 1;
+                p->stor = ST_PARAM;
+                p->level = 1;
+                apply_type(p, d);
+                if (d->dims) set_dims(p, d->dims);
+                if (!p->ty) set_default_type(p);
+                if (pt) pt->params = p; else s->params = p;
+                pt = p;
+            }
+        }
         if (a->ret) {
             Sym t;
             memset(&t, 0, sizeof t);
@@ -395,11 +505,17 @@ static void decl_items(Scope *sc, Node *it)
             s = find_in_scope(root, it->s);
             if (s && s->ext && s->cls == C_VAR) {
                 if (it->at->init && !s->init) s->init = it->at->init;
+                if (modmode && sc == root && s->isextv) {
+                    /* the definition follows a reference */
+                    s->isextv = 0;
+                    emit_storage(s);
+                }
                 continue;
             }
             if (sc != root) {
                 s = newsym(root, it->s, C_VAR);
                 s->level = 1;
+                s->isextv = modmode;
                 setup_sym(s, it, root);
                 finish_sym(s);
                 continue;
@@ -483,7 +599,14 @@ static void scan_one(Scope *sc, Node *s, Fn *fn)
         if (!ps || ps->cls != C_PROC) ps = newsym(sc, nm, C_PROC);
         ps->pn = s;
         ps->cn = mkcn("P", ps->id, nm);
+        ps->xname = s->at->xname;
+        ps->copt = (s->fl & 4) != 0;
+        if (modmode && sc == root && !(s->fl & 2)) {
+            ps->isextp = 1;
+            ps->cn = extname(nm, ps->xname, s->line);
+        }
         f = newfn(ps->cn, fn, rec);
+        f->ext = ps->isextp && modmode && sc == root;
         f->ps = ps;
         f->node = s;
         ps->rec = rec;

@@ -10,6 +10,7 @@ typedef struct { char *t; Sym *s; int nu; } LV;
 static char *ge(Node *e, int *k);
 static LV rl(Node *r);
 static char *gcall(Sym *p, Node *e, int *k);
+static char *entry_proto(Sym *p);
 static char *gbuiltin(Node *e, int *k);
 
 static char *newtemp(const char *ct)
@@ -346,6 +347,29 @@ static char *argp(Sym *pm, Node *a)
     return "";
 }
 
+/* argument for a C function: scalars by value, strings as char* */
+static char *argc_(Sym *pm, Node *a)
+{
+    char *r, *sv;
+    if (pm->nd || pm->ty == TY_STRUCT) {
+        sv = pm->lbv;
+        pm->lbv = 0;
+        r = argp(pm, a);
+        pm->lbv = sv;
+        return r;
+    }
+    if (is_str(pm)) {
+        uses_tmp = 1;
+        return cat3("pl_cstr(", pm->ty == TY_BIT ? cbit(a) : cstr(a),
+                    ")");
+    }
+    if (pm->ty == TY_PTR) return cptr(a);
+    if (is_num(pm))
+        return cat5("(", ctype_of(pm), ")(", cnum(a), ")");
+    perr(a->line, "unsupported argument type for", pm->name);
+    return "";
+}
+
 static char *gcall(Sym *p, Node *e, int *k)
 {
     Sb b;
@@ -358,7 +382,14 @@ static char *gcall(Sym *p, Node *e, int *k)
         Sym *q = find_in_scope(root, p->name);
         if (q && q != p && q->cls == C_PROC && q->pn) p = q;
     }
-    if (!p->pn) perr(e->line, "procedure has no definition:", p->name);
+    if (!p->pn && !(p->isextp && p->hasdsc))
+        perr(e->line, "procedure has no definition or ENTRY "
+             "description:", p->name);
+    if (!p->pn && !p->protodone) {
+        p->protodone = 1;
+        if (!(p->copt && is_libc(p->cn)))
+            sb_s(&gproto, entry_proto(p));
+    }
     memset(&b, 0, sizeof b);
     sb_s(&b, p->cn);
     sb_c(&b, '(');
@@ -367,7 +398,7 @@ static char *gcall(Sym *p, Node *e, int *k)
         if (!a) perr(e->line, "too few arguments to", p->name);
         if (!first) sb_s(&b, ", ");
         first = 0;
-        sb_s(&b, argp(pm, a));
+        sb_s(&b, p->copt ? argc_(pm, a) : argp(pm, a));
         a = a->next;
         n++;
     }
@@ -385,6 +416,12 @@ static char *gcall(Sym *p, Node *e, int *k)
     case TY_PTR: *k = K_P; break;
     default: *k = K_V; break;
     }
+    if (p->copt && p->ty == TY_CHR)
+        return cat3("pl_fromc((const char *)", sb_str(&b), ")");
+    if (p->copt && p->ty == TY_PTR)
+        return cat3("((void *)", sb_str(&b), ")");
+    if (p->copt && is_num(p))
+        return cat3("((double)", sb_str(&b), ")");
     return xdup(sb_str(&b));
 }
 

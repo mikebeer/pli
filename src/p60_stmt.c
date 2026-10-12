@@ -410,13 +410,13 @@ static void g_return(Node *s)
             v = cptr(s->a);
         }
         for (pm = p->params; pm; pm = pm->params)
-            if ((is_num(pm) || pm->ty == TY_PTR) && !pm->nd)
+            if (pm->pcn && (is_num(pm) || pm->ty == TY_PTR) && !pm->nd)
                 ln(cat5("*", pm->pcn, " = ", pm->cn, ";"));
         ln(cat3("return ", v, ";"));
         return;
     }
     for (pm = p->params; pm; pm = pm->params)
-        if ((is_num(pm) || pm->ty == TY_PTR) && !pm->nd)
+        if (pm->pcn && (is_num(pm) || pm->ty == TY_PTR) && !pm->nd)
             ln(cat5("*", pm->pcn, " = ", pm->cn, ";"));
     ln("return;");
 }

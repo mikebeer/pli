@@ -15,6 +15,17 @@ found, else the bundled TinyCC (Windows zips; `-cc name|bundled`).
 Several source files make one program: `pli -c main.pli util.pli`
 (ENTRY declarations and EXTERNAL variables work across files).
 
+A source name without a type gets `.pli` (`pli matrix` = matrix.pli;
+on CMS `matrix` = MATRIX PLI).
+
+Separate compilation: `pli -M -c main.pli util.pli` translates and
+compiles every file as a module and links them; `-C` stops at object
+files, `-n name` sets the module name, `-with a,b` names the other
+modules. C interop: `ENTRY ... OPTIONS(C)` calls C functions (numbers
+by value, strings as char*); a procedure with `OPTIONS(C)` can be
+called from C, see examples/cinterop (C main: plstart, <mod>_i,
+plstop). See the manual, chapter 4.
+
 Options: `-o file`, `-m l,r` (source margins), `-s` (subscript checks).
 
 Windows (32 and 64 bit): `make win` cross-builds `pli-i686.exe` and

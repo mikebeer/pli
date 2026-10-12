@@ -63,6 +63,26 @@ for d in tests/multi/*/; do
     fail=`expr $fail + 1`
   fi
 done
+# separately compiled modules and C: tests/modules/NAME/*.pli *.c
+for d in tests/modules/*/; do
+  n=`basename $d`
+  mkdir -p $T/m_$n && cp $d*.pli $d*.c $T/m_$n/ 2>/dev/null
+  files=`cd $T/m_$n && ls *.pli *.c 2>/dev/null`
+  if ! ( cd $T/m_$n && $here/${PLI#./} -M -c $files -cc "$CC" \
+         -o $T/$n ) 2>$T/$n.err; then
+    echo "FAIL $n (build): `head -5 $T/$n.err`"
+    fail=`expr $fail + 1`
+    continue
+  fi
+  ( cd $T && timeout 10 ./$n < /dev/null > $n.act 2>&1 )
+  if cmp -s $T/$n.act ${d}expected.out; then
+    pass=`expr $pass + 1`
+  else
+    echo "FAIL $n (output differs)"
+    diff $T/$n.act ${d}expected.out | head -10
+    fail=`expr $fail + 1`
+  fi
+done
 echo "passed $pass, failed $fail"
 rm -rf $T
 [ $fail = 0 ]
