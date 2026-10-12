@@ -20,6 +20,7 @@ static char *gfile(Node *f)
         perr(f->line, "undeclared file", f->s);
     }
     if (s->ty != TY_FILE) perr(f->line, "not a file:", f->s);
+    if (s->isparam) return s->cn;
     return cat3("(&", s->cn, ")");
 }
 
@@ -217,7 +218,32 @@ static void g_io(Node *s)
             if (put) ln(cat3("pl_eend(", ia.ft, ");"));
         }
     } else {
-        if (!put) perr(s->line, "GET DATA is not supported", 0);
+        if (!put) {
+            char *nmv = newtemp("const char *");
+            if (!s->c) perr(s->line, "GET DATA needs a list", 0);
+            ln(cat5("while ((", nmv, " = pl_gdn(", ia.ft,
+                    ")) != 0) {"));
+            ln("if (0) {");
+            for (it = s->c; it; it = it->next) {
+                LV l;
+                Node *e = it->a;
+                if (!e || e->k != X_REF || e->c)
+                    perr(s->line, "name expected in DATA list", 0);
+                l = rl(e);
+                if (l.nu || !(is_num(l.s) || is_str(l.s)))
+                    perr(e->line, "scalar expected in DATA list", 0);
+                ln(cat5("} else if (!strcmp(", nmv, ", \"",
+                        upname(e->s), "\")) {"));
+                get_el(l.s, l.t, &ia);
+            }
+            ln("} else {");
+            ln(cat3("pl_sig(PLC_ERR, \"GET DATA: unknown name\");", "",
+                    ""));
+            ln("}");
+            ln("}");
+            ln(cat3("pl_gdend(", ia.ft, ");"));
+            return;
+        }
         for (it = s->c; it; it = it->next) do_data(it, &ia);
         ln(cat3("pl_pd_end(", ia.ft, ");"));
     }
@@ -236,7 +262,7 @@ static void g_file(Node *s)
     if (s->k == S_OPEN || s->k == S_CLOSE) {
         for (sp = s->a; sp; sp = sp->next) {
             Sym *fs = lookup(sp->a->s);
-            int mode, prt, rec;
+            int mode, prt, rec, kd;
             ft = gfile(sp->a);
             if (s->k == S_CLOSE) {
                 ln(cat3("pl_close(", ft, ");"));
@@ -245,50 +271,108 @@ static void g_file(Node *s)
             dd = ddname(sp->a);
             mode = sp->n ? sp->n : (fs ? fs->fmode : 0);
             prt = (sp->fl & 1) || (fs && fs->fprt);
-            rec = (sp->fl & 2) || (fs && fs->frec);
+            kd = (sp->fl & 4) || (fs && fs->fkeyed);
+            rec = (sp->fl & 2) || (fs && fs->frec) || kd;
             if (!mode) mode = prt ? 2 : 1;
             ln(cat5("pl_open(", ft, cat3(", \"", dd, "\", "),
                     sp->b ? cat3("pl_cs(", cstr(sp->b), ")") : "0",
                     cat5(", ", itoa_((long)(mode | (prt ? 4 : 0) |
-                    (rec ? 8 : 0))), ", ", sp->c ? lcount(sp->c) :
-                    "0", cat3(", ", sp->d ? lcount(sp->d) : "0",
+                    (rec ? 8 : 0) | (kd ? 16 : 0))), ", ",
+                    sp->c ? lcount(sp->c) : "0",
+                    cat3(", ", sp->d ? lcount(sp->d) : "0",
                     ");"))));
         }
         return;
     }
-    if (s->k == S_REWRITE)
-        perr(s->line, "REWRITE is not supported", 0);
-    if (!s->a || !s->b) perr(s->line, "FILE and INTO/FROM needed", 0);
-    ft = gfile(s->a);
-    dd = ddname(s->a);
-    ln(cat5("pl_chk(", ft, ", \"", dd, s->k == S_READ ?
-            "\", 9);" : "\", 10);"));
-    if (s->k == S_READ) {
-        v = rl(s->b);
-        if (v.nu)
-            perr(s->line, "READ INTO an array is unsupported", 0);
-        if (v.s->ty == TY_CHR)
-            ln(cat5("pl_rdrec(", ft, ", ", pvtxt(v), ");"));
-        else
-            ln(cat5("pl_rdbin(", ft, ", &", v.t,
-                    cat3(", (long)sizeof ", v.t, ");")));
-        return;
-    }
     {
-        int k;
-        Node *e = s->b;
+        Sym *fs;
+        int k, mode, rd = s->k == S_READ;
+        char *key, *kfrom, *tr = 0, *tps = 0, *ptr = 0, *len = 0;
+        Node *e;
+        if (!s->a) perr(s->line, "FILE needed", 0);
+        if (s->k != S_DELETE && !s->b)
+            perr(s->line, "INTO or FROM needed", 0);
+        ft = gfile(s->a);
+        dd = ddname(s->a);
+        fs = lookup(s->a->s);
+        mode = (fs && fs->fmode) ? fs->fmode :
+               (rd ? 1 : (s->k == S_WRITE ? 2 : 3));
+        ln(cat5("pl_chk(", ft, ", \"", dd, cat3("\", ", itoa_((long)(
+                mode | 8 | (fs && fs->fkeyed ? 16 : 0))), ");")));
+        key = s->c ? cstr(s->c) : "pl_ls(\"\")";
+        kfrom = s->d ? cstr(s->d) : "pl_ls(\"\")";
+        if (s->k == S_DELETE) {
+            ln(cat5("if (", ft, "->tab) pl_tdel(", ft, cat5(", ", key,
+                    ", ", s->c ? "1" : "0", ");")));
+            ln(cat3("else pl_sig(PLC_ERR, \"DELETE needs a KEYED or ",
+                    "UPDATE file\");", ""));
+            return;
+        }
+        if (rd) {
+            v = rl(s->b);
+            tr = newtemp("PLR *");
+            ln(cat5("if (", ft, "->tab) {", "", ""));
+            ln(cat5(tr, " = pl_trd(", ft, cat3(", ", key, ", "),
+                    cat2(s->c ? "1" : "0", ");")));
+            ln(cat3("if (", tr, ") {"));
+            if (v.s->ty == TY_CHR && !v.nu)
+                ln(cat3("pl_as(", pvtxt(v), cat5(", pl_mk(", tr,
+                        "->d, ", tr, "->dn));")));
+            else
+                ln(cat5("pl_tcopy(", tr, ", &", v.t,
+                        cat3(", (long)sizeof ", v.t, ");")));
+            if (s->e) {
+                LV kv = rl(s->e);
+                if (!is_str(kv.s) || kv.nu)
+                    perr(s->line, "KEYTO needs a string variable", 0);
+                ln(cat3("pl_as(", pvtxt(kv), cat5(", pl_mk(", tr,
+                        "->k, ", tr, "->kn));")));
+            }
+            ln("}");
+            ln("} else {");
+            if (v.s->ty == TY_CHR && !v.nu)
+                ln(cat5("pl_rdrec(", ft, ", ", pvtxt(v), ");"));
+            else
+                ln(cat5("pl_rdbin(", ft, ", &", v.t,
+                        cat3(", (long)sizeof ", v.t, ");")));
+            ln("}");
+            return;
+        }
+        e = s->b;
+        tps = newtemp("PS");
         if (e->k == X_REF && !e->c && lookup(e->s) &&
             lookup(e->s)->cls == C_VAR) {
             v = rl(e);
             if (v.s->ty == TY_CHR && !v.nu) {
-                ln(cat5("pl_wrrec(", ft, ", pl_ps(", pvtxt(v), "));"));
-                return;
+                ln(cat5(tps, " = pl_ps(", pvtxt(v), ");", ""));
+                ptr = cat2(tps, ".p");
+                len = cat2(tps, ".n");
+            } else {
+                tps = 0;
+                ptr = cat2("&", v.t);
+                len = cat3("(long)sizeof ", v.t, "");
             }
-            ln(cat5("pl_wrbin(", ft, ", &", v.t,
-                    cat3(", (long)sizeof ", v.t, ");")));
+        } else {
+            (void)ge(e, &k);
+            ln(cat5(tps, " = ", cstr(e), ";", ""));
+            ptr = cat2(tps, ".p");
+            len = cat2(tps, ".n");
+        }
+        if (s->k == S_REWRITE) {
+            ln(cat5("if (", ft, "->tab) pl_trw(", ft, cat5(", ", key,
+                    ", ", s->c ? "1" : "0", cat5(", ", ptr, ", ", len,
+                    ");"))));
+            ln(cat2("else pl_sig(PLC_ERR, \"REWRITE needs an ",
+                    "UPDATE file\");"));
             return;
         }
-        (void)ge(e, &k);
-        ln(cat5("pl_wrrec(", ft, ", ", cstr(e), ");"));
+        ln(cat5("if (", ft, "->tab) pl_twr(", ft, cat5(", ", kfrom,
+                ", ", s->d ? "1" : "0", cat5(", ", ptr, ", ", len,
+                ");"))));
+        if (tps)
+            ln(cat5("else pl_wrrec(", ft, ", ", tps, ");"));
+        else
+            ln(cat5("else pl_wrbin(", ft, ", ", ptr,
+                    cat3(", ", len, ");")));
     }
 }

@@ -36,6 +36,7 @@ typedef struct { char *p; long *np; long max; } PV; /* variable */
 
 
 /* ---- files ---- */
+typedef struct { char *k; long kn; char *d; long dn; } PLR;
 typedef struct PLF {
     FILE *fp;
     const char *dd;
@@ -48,6 +49,10 @@ typedef struct PLF {
     char *mb; long mn, mcap, mp;
     const char *fs, *fc;
     int xs;
+    PLR *tr;            /* record table (KEYED or UPDATE) */
+    long tn, tcap, tp, tc;
+    int tab, tkey, ttxt, tdirty, gdm;
+    char *nm;
 } PLF;
 
 #define PLF_IN  1
@@ -55,6 +60,7 @@ typedef struct PLF {
 #define PLF_UPD 3
 #define PLF_PRT 4
 #define PLF_REC 8
+#define PLF_KEY 16
 
 
 /* ---- temporary string arena ---- */
@@ -196,12 +202,14 @@ static const char *pl_cn(int c)
     return (c > 0 && c < PLC_N) ? nm[c] : "?";
 }
 
+static long pl_oc2;
 static void pl_sig(int c, const char *m)
 {
     static const long oc[] = { 0, 3, 320, 300, 330, 340, 600, 520,
         560, 4, 50, 40, 90 };
     void (*h)(void);
     pl_oncode = oc[c];
+    if (pl_oc2) { pl_oncode = pl_oc2; pl_oc2 = 0; }
     h = pl_hd[c];
     if (h && !pl_hb[c]) {
         pl_hb[c] = 1;
@@ -809,6 +817,170 @@ static PS pl_chrn(PS s, double w)
     return n >= s.n ? pl_just(s, w, 0) : pl_mk(s.p, n);
 }
 
+/* ---- record tables: KEYED and UPDATE record files ---- */
+static void pl_eofsig(PLF *f);
+
+static long pl_keyn(const char *p, long n)
+{
+    while (n > 0 && p[n - 1] == ' ') n--;
+    return n;
+}
+
+static int pl_kcmp(const char *a, long an, const char *b, long bn)
+{
+    long m = an < bn ? an : bn;
+    int c = m ? memcmp(a, b, (size_t)m) : 0;
+    if (c) return c;
+    return an < bn ? -1 : (an > bn ? 1 : 0);
+}
+
+static char *pl_dup(const char *p, long n)
+{
+    char *r = (char *)pl_mem(n + 1);
+    if (n) memcpy(r, p, (size_t)n);
+    r[n] = 0;
+    return r;
+}
+
+static void pl_tadd(PLF *f, long at, const char *k, long kn,
+                    const char *d, long dn)
+{
+    long i;
+    if (f->tn >= f->tcap) {
+        PLR *nt;
+        long nc = f->tcap * 2 + 16;
+        nt = (PLR *)pl_mem(nc * (long)sizeof(PLR));
+        for (i = 0; i < f->tn; i++) nt[i] = f->tr[i];
+        free(f->tr);
+        f->tr = nt;
+        f->tcap = nc;
+    }
+    for (i = f->tn; i > at; i--) f->tr[i] = f->tr[i - 1];
+    f->tr[at].k = pl_dup(k, kn);
+    f->tr[at].kn = kn;
+    f->tr[at].d = pl_dup(d, dn);
+    f->tr[at].dn = dn;
+    f->tn++;
+    f->tdirty = 1;
+}
+
+/* index of key, or -(insertion point)-1 when absent */
+static long pl_tfind(PLF *f, const char *k, long kn)
+{
+    long lo = 0, hi = f->tn - 1, mid;
+    int c;
+    while (lo <= hi) {
+        mid = (lo + hi) / 2;
+        c = pl_kcmp(f->tr[mid].k, f->tr[mid].kn, k, kn);
+        if (c == 0) return mid;
+        if (c < 0) lo = mid + 1; else hi = mid - 1;
+    }
+    return -lo - 1;
+}
+
+static unsigned long pl_get4(const unsigned char *b)
+{
+    return ((unsigned long)b[0] << 24) | ((unsigned long)b[1] << 16) |
+           ((unsigned long)b[2] << 8) | (unsigned long)b[3];
+}
+
+static void pl_put4(FILE *fp, unsigned long v)
+{
+    putc((int)((v >> 24) & 255), fp);
+    putc((int)((v >> 16) & 255), fp);
+    putc((int)((v >> 8) & 255), fp);
+    putc((int)(v & 255), fp);
+}
+
+static void pl_tload(PLF *f, FILE *fp)
+{
+    long n = 0, cap = 1024, i, a;
+    int c;
+    char *b = (char *)pl_mem(cap);
+    unsigned char *u;
+    while ((c = getc(fp)) != EOF) {
+        if (n + 2 > cap) {
+            char *nb = (char *)pl_mem(cap * 2);
+            memcpy(nb, b, (size_t)n);
+            free(b);
+            b = nb;
+            cap *= 2;
+        }
+        b[n++] = (char)c;
+    }
+    u = (unsigned char *)b;
+    if (n >= 4 && !memcmp(b, "PLR1", 4)) {
+        i = 4;
+        while (i + 8 <= n) {
+            unsigned long kn = pl_get4(u + i), dn = pl_get4(u + i + 4);
+            i += 8;
+            if (i + (long)kn + (long)dn > n) break;
+            pl_tadd(f, f->tn, b + i, (long)kn, b + i + kn, (long)dn);
+            i += (long)kn + (long)dn;
+        }
+    } else if (n > 0) {
+        f->ttxt = 1;
+        i = 0;
+        while (i < n) {
+            a = i;
+            while (i < n && b[i] != '\n') i++;
+            c = (int)(i - a);
+            if (c > 0 && b[a + c - 1] == '\r') c--;
+            pl_tadd(f, f->tn, "", 0, b + a, c);
+            if (i < n) i++;
+        }
+    }
+    f->tdirty = 0;
+    free(b);
+}
+
+static void pl_tsave(PLF *f)
+{
+    long i;
+    FILE *fp;
+    if (!f->tdirty && f->mode != PLF_OUT) return;
+    fp = fopen(f->nm, f->ttxt ? "w" : "wb");
+    if (!fp) {
+        fprintf(stderr, "PLI: cannot write %s\n", f->nm);
+        return;
+    }
+    if (!f->ttxt) fwrite("PLR1", 1, 4, fp);
+    for (i = 0; i < f->tn; i++) {
+        if (f->ttxt) {
+            fwrite(f->tr[i].d, 1, (size_t)f->tr[i].dn, fp);
+            putc('\n', fp);
+        } else {
+            pl_put4(fp, (unsigned long)f->tr[i].kn);
+            pl_put4(fp, (unsigned long)f->tr[i].dn);
+            fwrite(f->tr[i].k, 1, (size_t)f->tr[i].kn, fp);
+            fwrite(f->tr[i].d, 1, (size_t)f->tr[i].dn, fp);
+        }
+    }
+    fclose(fp);
+    f->tdirty = 0;
+}
+
+static void pl_tfree(PLF *f)
+{
+    long i;
+    for (i = 0; i < f->tn; i++) {
+        free(f->tr[i].k);
+        free(f->tr[i].d);
+    }
+    free(f->tr);
+    free(f->nm);
+    f->tr = 0;
+    f->nm = 0;
+    f->tn = f->tcap = f->tp = f->tc = 0;
+    f->tab = 0;
+}
+
+static void pl_keysig(long code, const char *m)
+{
+    pl_oc2 = code;
+    pl_sig(PLC_KEY, m);
+}
+
 /* ---- files ---- */
 static void pl_reg(PLF *f)
 {
@@ -820,6 +992,13 @@ static void pl_reg(PLF *f)
 static void pl_close(PLF *f)
 {
     if (f->mem) return;
+    if (f->tab) {
+        pl_tsave(f);
+        pl_tfree(f);
+        f->mode = 0;
+        f->tab = 0;
+        return;
+    }
     if (f->mode == PLF_OUT && f->col > 0 && f->prt && f->fp)
         putc('\n', f->fp);
     if (f->fp && f->fp != stdin && f->fp != stdout) fclose(f->fp);
@@ -847,6 +1026,10 @@ static void pl_open(PLF *f, const char *dd, const char *title,
     f->line = 0;
     f->lv = 0;
     f->eofs = 0;
+    f->tkey = (fl & PLF_KEY) != 0;
+    f->tab = f->rec && (f->tkey || f->mode == PLF_UPD);
+    f->ttxt = 0;
+    f->tdirty = 0;
     if (!name) {
         sprintf(nm, "DD_%s", dd);
         e = getenv(nm);
@@ -861,6 +1044,24 @@ static void pl_open(PLF *f, const char *dd, const char *title,
             nm[i] = 0;
             name = nm;
         }
+    }
+    if (f->tab) {
+        FILE *tf = 0;
+        f->tn = f->tp = 0;
+        f->tc = -1;
+        if (f->mode != PLF_OUT) tf = fopen(name, "rb");
+        if (!tf && f->mode == PLF_IN) {
+            f->tab = 0;
+            fflush(stdout);
+            fprintf(stderr, "PLI: cannot open %s (%s)\n", dd, name);
+            pl_sig(PLC_ERR, "OPEN failed");
+            return;
+        }
+        if (tf) { pl_tload(f, tf); fclose(tf); }
+        f->nm = pl_dup(name, (long)strlen(name));
+        f->fp = 0;
+        pl_reg(f);
+        return;
     }
     if (f->rec)
         md = f->mode == PLF_IN ? "rb" :
@@ -1255,11 +1456,51 @@ static PS pl_gtok(PLF *f, int *quo)
     }
     a = f->lp;
     while (f->lp < f->ln && f->lb[f->lp] != ' ' &&
-           f->lb[f->lp] != '\t' && f->lb[f->lp] != ',')
+           f->lb[f->lp] != '\t' && f->lb[f->lp] != ',' &&
+           !(f->gdm && f->lb[f->lp] == ';'))
         f->lp++;
     r.p = f->lb + a;
     r.n = f->lp - a;
     return pl_keep(r);
+}
+
+/* GET DATA: next "name =" of the data stream, upper case; 0 at ';' */
+static const char *pl_gdn(PLF *f)
+{
+    static char nm[72];
+    long n = 0;
+    int c;
+    f->gdm = 1;
+    for (;;) {
+        if (!pl_need(f)) return 0;
+        while (f->lp < f->ln && (f->lb[f->lp] == ' ' ||
+               f->lb[f->lp] == '\t' || f->lb[f->lp] == ','))
+            f->lp++;
+        if (f->lp < f->ln) break;
+        f->lv = 0;
+    }
+    if (f->lb[f->lp] == ';') {
+        f->lp++;
+        f->gdm = 0;
+        return 0;
+    }
+    while (f->lp < f->ln) {
+        c = (unsigned char)f->lb[f->lp];
+        if (c == ' ' || c == '\t' || c == '=' || c == ',' || c == ';')
+            break;
+        if (n < 70) nm[n++] = (char)toupper(c);
+        f->lp++;
+    }
+    nm[n] = 0;
+    while (f->lp < f->ln && (f->lb[f->lp] == ' ' ||
+           f->lb[f->lp] == '\t')) f->lp++;
+    if (f->lp < f->ln && f->lb[f->lp] == '=') f->lp++;
+    return nm;
+}
+
+static void pl_gdend(PLF *f)
+{
+    f->gdm = 0;
 }
 
 static void pl_gn_l(PLF *f, double *x)
@@ -1383,6 +1624,94 @@ static void pl_wrrec(PLF *f, PS s)
     putc('\n', f->fp);
 }
 
+static PLR *pl_trd(PLF *f, PS key, int use)
+{
+    long i;
+    if (use) {
+        if (!f->tkey) {
+            pl_keysig(51, "file is not KEYED");
+            return 0;
+        }
+        i = pl_tfind(f, key.p, pl_keyn(key.p, key.n));
+        if (i < 0) { pl_keysig(51, "record not found"); return 0; }
+    } else {
+        if (f->tp >= f->tn) { pl_eofsig(f); return 0; }
+        i = f->tp;
+    }
+    f->tc = i;
+    f->tp = i + 1;
+    return &f->tr[i];
+}
+
+static void pl_tcopy(const PLR *r, void *p, long n)
+{
+    long m = r->dn < n ? r->dn : n;
+    if (m) memcpy(p, r->d, (size_t)m);
+    if (m < n) memset((char *)p + m, 0, (size_t)(n - m));
+}
+
+static void pl_twr(PLF *f, PS key, int hk, const void *p, long n)
+{
+    long i, kn;
+    if (f->mode == PLF_IN) {
+        pl_sig(PLC_ERR, "WRITE to an INPUT file");
+        return;
+    }
+    if (f->tkey) {
+        if (!hk) { pl_keysig(51, "KEYFROM needed"); return; }
+        kn = pl_keyn(key.p, key.n);
+        i = pl_tfind(f, key.p, kn);
+        if (i >= 0) { pl_keysig(52, "duplicate key"); return; }
+        i = -i - 1;
+        pl_tadd(f, i, key.p, kn, (const char *)p, n);
+        if (i < f->tp) f->tp++;
+    } else {
+        pl_tadd(f, f->tn, "", 0, (const char *)p, n);
+    }
+    f->tc = -1;
+}
+
+static long pl_tsel(PLF *f, PS key, int hk)
+{
+    long i;
+    if (hk) {
+        if (!f->tkey) {
+            pl_keysig(51, "file is not KEYED");
+            return -1;
+        }
+        i = pl_tfind(f, key.p, pl_keyn(key.p, key.n));
+        if (i < 0) { pl_keysig(51, "record not found"); return -1; }
+        return i;
+    }
+    if (f->tc < 0 || f->tc >= f->tn) {
+        pl_sig(PLC_ERR, "no current record");
+        return -1;
+    }
+    return f->tc;
+}
+
+static void pl_trw(PLF *f, PS key, int hk, const void *p, long n)
+{
+    long i = pl_tsel(f, key, hk);
+    if (i < 0) return;
+    free(f->tr[i].d);
+    f->tr[i].d = pl_dup((const char *)p, n);
+    f->tr[i].dn = n;
+    f->tdirty = 1;
+}
+
+static void pl_tdel(PLF *f, PS key, int hk)
+{
+    long i = pl_tsel(f, key, hk), j;
+    if (i < 0) return;
+    free(f->tr[i].k);
+    free(f->tr[i].d);
+    for (j = i; j + 1 < f->tn; j++) f->tr[j] = f->tr[j + 1];
+    f->tn--;
+    if (i < f->tp) f->tp--;
+    f->tc = -1;
+    f->tdirty = 1;
+}
 static void pl_rdbin(PLF *f, void *p, long n)
 {
     if (fread(p, 1, (size_t)n, f->fp) != (size_t)n) pl_eofsig(f);

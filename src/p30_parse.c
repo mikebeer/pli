@@ -463,7 +463,7 @@ static void p_attrs(Attr *a)
         } else if (!strcmp(k, "like")) {
             nxt(); a->like = expid();
         } else if (!strcmp(k, "stream") || !strcmp(k, "sequential") ||
-                   !strcmp(k, "keyed") || !strcmp(k, "buffered") ||
+                   !strcmp(k, "buffered") ||
                    !strcmp(k, "unbuffered") || !strcmp(k, "aligned") ||
                    !strcmp(k, "unaligned") || !strcmp(k, "packed") ||
                    !strcmp(k, "real") || !strcmp(k, "builtin") ||
@@ -472,6 +472,8 @@ static void p_attrs(Attr *a)
                    !strcmp(k, "irreducible") ||
                    !strcmp(k, "nonvarying")) {
             nxt();
+        } else if (!strcmp(k, "keyed") || !strcmp(k, "direct")) {
+            nxt(); a->keyed = 1; a->rec = 1;
         } else if (!strcmp(k, "record")) { nxt(); a->rec = 1; }
         else if (!strcmp(k, "print")) { nxt(); a->prt = 1; }
         else if (!strcmp(k, "input")) { nxt(); a->mode = 1; }
@@ -735,7 +737,8 @@ static int iskw(const char *s)
     static const char *kw[] = { "if", "do", "begin", "procedure",
         "proc", "call", "return", "goto", "go", "leave", "iterate",
         "select", "stop", "exit", "declare", "dcl", "put", "get",
-        "open", "close", "read", "write", "rewrite", "allocate",
+        "open", "close", "read", "write", "rewrite", "delete",
+        "allocate",
         "alloc", "free", "on", "revert", "signal", "display", "end",
         0 };
     int i;
@@ -1034,6 +1037,9 @@ static Node *p_stmt(void)
                         nxt(); sp->fl |= 1;
                     } else if (!strcmp(w, "record")) {
                         nxt(); sp->fl |= 2;
+                    } else if (!strcmp(w, "keyed") ||
+                               !strcmp(w, "direct")) {
+                        nxt(); sp->fl |= 6;
                     }
                     else if (!strcmp(w, "stream") ||
                              !strcmp(w, "sequential") ||
@@ -1048,16 +1054,20 @@ static Node *p_stmt(void)
             }
             expop(";");
         } else if (!strcmp(k, "read") || !strcmp(k, "write") ||
-                   !strcmp(k, "rewrite")) {
+                   !strcmp(k, "rewrite") || !strcmp(k, "delete")) {
             n = newnode(k[0] == 'r' && k[2] == 'a' ? S_READ : S_WRITE,
                         line);
             if (!strcmp(k, "rewrite")) n->k = S_REWRITE;
+            if (!strcmp(k, "delete")) n->k = S_DELETE;
             while (!isop(";")) {
                 char *w = expid();
                 expop("(");
                 if (!strcmp(w, "file")) n->a = p_ref();
                 else if (!strcmp(w, "into")) n->b = p_ref();
                 else if (!strcmp(w, "from")) n->b = p_expr();
+                else if (!strcmp(w, "key")) n->c = p_expr();
+                else if (!strcmp(w, "keyfrom")) n->d = p_expr();
+                else if (!strcmp(w, "keyto")) n->e = p_ref();
                 else perr(line, "READ/WRITE option unsupported", w);
                 expop(")");
             }

@@ -702,7 +702,7 @@ static void gs_one(Node *s)
     case S_DECL: break;
     case S_PUT: case S_GET: g_io(s); break;
     case S_OPEN: case S_CLOSE: case S_READ: case S_WRITE:
-    case S_REWRITE: g_file(s); break;
+    case S_REWRITE: case S_DELETE: g_file(s); break;
     case S_ALLOC: g_alloc(s, 0); break;
     case S_FREE: g_alloc(s, 1); break;
     case S_ON: g_on(s, 0); break;

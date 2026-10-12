@@ -298,11 +298,14 @@ static int same_store(Sym *a, Sym *b)
     return a->ty == b->ty && is_long(a) == is_long(b);
 }
 
+static char *gfile(Node *f);
+
 static char *argp(Sym *pm, Node *a)
 {
     LV v;
     int k;
     Sym *x = 0;
+    if (pm->ty == TY_FILE) return gfile(a);
     if (a->k == X_REF && !a->c && lookup(a->s) &&
         lookup(a->s)->cls == C_VAR) {
         v = rl(a);

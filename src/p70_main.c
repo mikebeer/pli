@@ -20,7 +20,10 @@ static char *param_decl(Sym *pm, Fn *f)
     int i;
     Sb b;
     pm->isparam = 1;
-    if (pm->ty == TY_FILE) perr(0, "FILE parameters unsupported", 0);
+    if (pm->ty == TY_FILE) {
+        pm->cn = nm;
+        return cat2("PLF *", nm);
+    }
     if (pm->nd) {
         char *el;
         if (pm->ty == TY_STRUCT)

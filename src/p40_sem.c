@@ -414,6 +414,7 @@ static void setup_sym(Sym *s, Node *it, Scope *sc)
     s->fprt = a->prt;
     s->frec = a->rec;
     s->fmode = a->mode;
+    s->fkeyed = a->keyed;
     if (it->b) set_dims(s, it->b);
     if (a->like) {
         Sym *l = lookupc(sc, a->like, C_VAR);

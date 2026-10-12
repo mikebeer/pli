@@ -40,7 +40,7 @@ enum {
     S_GOTO, S_LEAVE, S_ITER, S_SELECT, S_WHEN, S_STOP, S_NULL,
     S_DECL, S_PUT, S_GET, S_OPEN, S_CLOSE, S_READ, S_WRITE,
     S_ALLOC, S_FREE, S_ON, S_REVERT, S_SIGNAL, S_DISPLAY,
-    S_END, S_REWRITE,
+    S_END, S_REWRITE, S_DELETE,
     N_SPEC = 60, N_ITEM, N_DO, N_FMT, N_BND, N_OPT
 };
 
@@ -51,7 +51,7 @@ struct Attr {
     int p, q;
     int len, vary;
     int stor;           /* ST_* */
-    int ext, isent, isfile, rec, prt, mode;
+    int ext, isent, isfile, rec, prt, mode, keyed;
     Node *based, *init;
     char *like;
     Attr *ret;
@@ -98,7 +98,7 @@ struct Sym {
     int ispv;           /* parameter held as PV */
     int hasdim;
     int lblfn;
-    int fprt, frec, fmode;
+    int fprt, frec, fmode, fkeyed;
     char *xname;        /* external C name given by EXTERNAL('x') */
     int copt;           /* OPTIONS(C): C calling convention */
     int isextp;         /* external procedure (module mode) */
