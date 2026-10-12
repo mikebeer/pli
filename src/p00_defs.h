@@ -27,6 +27,7 @@ typedef struct {
     double dv;
     int fl;             /* STR: 1 bit, NUM: 1 float */
     int im;             /* NUM: imaginary constant (3.5I) */
+    char *ord;          /* NUM: from this ORDINAL type */
     int q;              /* NUM: decimals / mantissa digits */
     int line;
     char *file;
@@ -41,7 +42,7 @@ enum {
     S_GOTO, S_LEAVE, S_ITER, S_SELECT, S_WHEN, S_STOP, S_NULL,
     S_DECL, S_PUT, S_GET, S_OPEN, S_CLOSE, S_READ, S_WRITE,
     S_ALLOC, S_FREE, S_ON, S_REVERT, S_SIGNAL, S_DISPLAY,
-    S_END, S_REWRITE, S_DELETE,
+    S_END, S_REWRITE, S_DELETE, S_ASSERT,
     N_SPEC = 60, N_ITEM, N_DO, N_FMT, N_BND, N_OPT
 };
 
@@ -63,6 +64,9 @@ struct Attr {
     char *pic;          /* PICTURE string */
     char *defbase;      /* DEFINED base variable */
     Node *defpos;       /* POSITION of a DEFINED string */
+    int uns, ord;       /* UNSIGNED; ORDINAL type number */
+    int stype;          /* TYPE of a structure: type number */
+    int htype;          /* HANDLE: structure type number */
 };
 
 struct Node {
@@ -114,6 +118,8 @@ struct Sym {
     int picnum;         /* numeric picture */
     char *defbase;      /* DEFINED base variable */
     long defpos;        /* POSITION of a DEFINED string, 1 up */
+    Sym *hs;            /* HANDLE: the structure it points to */
+    int ord;            /* ORDINAL type number */
 };
 
 struct Scope {

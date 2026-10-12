@@ -107,6 +107,12 @@ static Node *p_prim(void)
         n->dv = TK.dv;
         n->fl = TK.fl;
         n->im = TK.im;
+        n->s = TK.ord;
+        if (!TK.fl && !TK.q && !TK.im && TK.dv >= 1e12 &&
+            strlen(TK.s) >= 13) {
+            n->a = newnode(X_STR, TK.line);
+            n->a->s = TK.s;
+        }
         n->n = TK.q;
         nxt();
         return n;
@@ -346,6 +352,7 @@ static Node *p_initlist(void)
 }
 
 static void p_attrs(Attr *a);
+static Node *p_decl(void);
 
 /* ENTRY(desc, desc, ...): one attribute list per parameter */
 static void p_entry_desc(Attr *a)
@@ -386,6 +393,173 @@ static int p_options(void)
     }
     nxt();
     return fl;
+}
+
+/* ---- DEFINE STRUCTURE / ALIAS / ORDINAL ---- */
+
+typedef struct {
+    char *name;
+    int kind;           /* 0 structure, 1 alias, 2 ordinal */
+    Node *items;
+    Attr *al;
+    int nord, prec;
+    char **onm;
+    long *ov;
+} TypeDef;
+static TypeDef types[128];
+static int ntypes = 0;
+
+static Attr *newattr(void)
+{
+    Attr *a = (Attr *)xalloc((long)sizeof(Attr));
+    a->len = -2;
+    a->p = -1;
+    a->q = -1;
+    return a;
+}
+
+static int find_type(const char *nm)
+{
+    int i;
+    for (i = 0; i < ntypes; i++)
+        if (!strcmp(types[i].name, nm)) return i;
+    return -1;
+}
+
+static TypeDef *new_type(const char *nm, int kind, int line)
+{
+    TypeDef *t;
+    if (find_type(nm) >= 0)
+        perr(line, "type already defined:", nm);
+    if (ntypes >= 128) perr(line, "too many type definitions", 0);
+    t = &types[ntypes++];
+    memset(t, 0, sizeof *t);
+    t->name = xdup(nm);
+    t->kind = kind;
+    return t;
+}
+
+static void apply_alias(Attr *a, Attr *al)
+{
+    if (al->ty) a->ty = al->ty;
+    if (al->fix) a->fix = al->fix;
+    if (al->base) a->base = al->base;
+    if (al->p != -1) a->p = al->p;
+    if (al->q != -1) a->q = al->q;
+    if (al->len != -2) a->len = al->len;
+    a->vary |= al->vary;
+    a->cpx |= al->cpx;
+    a->isfile |= al->isfile;
+    a->uns |= al->uns;
+    if (al->pic) a->pic = al->pic;
+    if (al->ord) a->ord = al->ord;
+    if (al->stype) a->stype = al->stype;
+    if (al->htype) a->htype = al->htype;
+}
+
+/* the member items of a structure type at level base */
+static Node *copy_members(Node *m, int base, Node **tail)
+{
+    Node *h = 0, *t = 0, *c;
+    for (; m; m = m->next) {
+        c = newnode(N_ITEM, m->line);
+        *c = *m;
+        c->next = 0;
+        c->n = base + m->n - 1;
+        if (t) t->next = c; else h = c;
+        t = c;
+    }
+    *tail = t;
+    return h;
+}
+
+/* a hidden BASED copy of the structure, for HANDLE */
+static Node *hidden_struct(int ti, char **hname)
+{
+    Node *h, *tl;
+    char b[100];
+    sprintf(b, "hnd_%.80s", types[ti].name);
+    h = copy_members(types[ti].items, 1, &tl);
+    h->s = xdup(b);
+    h->at = newattr();
+    *h->at = *types[ti].items->at;
+    h->at->stor = ST_BASED;
+    *hname = h->s;
+    return h;
+}
+
+static void p_define(int line)
+{
+    char *kind = expid(), *nm;
+    TypeDef *t;
+    if (!strcmp(kind, "alias")) {
+        Attr *al = newattr();
+        nm = expid();
+        p_attrs(al);
+        t = new_type(nm, 1, line);
+        t->al = al;
+    } else if (!strcmp(kind, "structure")) {
+        Node *it;
+        if (TK.k != T_NUM || TK1.k != T_ID)
+            perr(line, "DEFINE STRUCTURE needs a level 1 name", 0);
+        t = new_type(TK1.s, 0, line);
+        it = p_decl();
+        if (it->n > 1)
+            perr(line, "DEFINE STRUCTURE needs a level 1 name", 0);
+        t->items = it;
+    } else if (!strcmp(kind, "ordinal")) {
+        long v = 0, i;
+        nm = expid();
+        t = new_type(nm, 2, line);
+        t->prec = 31;
+        t->onm = (char **)xalloc(256 * (long)sizeof(char *));
+        t->ov = (long *)xalloc(256 * (long)sizeof(long));
+        expop("(");
+        for (;;) {
+            if (t->nord >= 256) perr(line, "ORDINAL too long", 0);
+            t->onm[t->nord] = expid();
+            if (isid("value")) {
+                nxt();
+                expop("(");
+                v = (long)cval(p_expr());
+                expop(")");
+            }
+            t->ov[t->nord++] = v++;
+            if (isop(",")) { nxt(); continue; }
+            break;
+        }
+        expop(")");
+        while (TK.k == T_ID) {
+            if (isid("prec") || isid("precision")) {
+                nxt();
+                expop("(");
+                t->prec = (int)cval(p_expr());
+                expop(")");
+            } else if (isid("unsigned") || isid("signed")) {
+                nxt();
+            } else break;
+        }
+        /* the names are constants from here on */
+        for (i = ptk; i < tokens.n; i++) {
+            long j;
+            Tok *x = &tokens.a[i];
+            if (x->k != T_ID) continue;
+            if (i > 0 && tisop(&tokens.a[i - 1], ".")) continue;
+            for (j = 0; j < t->nord; j++)
+                if (!strcmp(x->s, t->onm[j])) {
+                    char b[40];
+                    sprintf(b, "%ld", t->ov[j]);
+                    x->k = T_NUM;
+                    x->s = xdup(b);
+                    x->dv = (double)t->ov[j];
+                    x->q = 0;
+                    x->fl = 0;
+                    x->ord = t->name;
+                }
+        }
+    } else {
+        perr(line, "DEFINE needs ALIAS, STRUCTURE or ORDINAL", 0);
+    }
 }
 
 static void p_attrs(Attr *a)
@@ -486,6 +660,36 @@ static void p_attrs(Attr *a)
             else a->defbase = expid();
         } else if (!strcmp(k, "position") || !strcmp(k, "pos")) {
             nxt(); expop("("); a->defpos = p_expr(); expop(")");
+        } else if (!strcmp(k, "type") || !strcmp(k, "ordinal") ||
+                   !strcmp(k, "handle")) {
+            int hd = k[0] == 'h', ti;
+            char *tn;
+            nxt();
+            tn = expid();
+            ti = find_type(tn);
+            if (ti < 0) perr(TK.line, "unknown type:", tn);
+            if (hd) {
+                if (types[ti].kind != 0)
+                    perr(TK.line, "HANDLE needs a structure type", 0);
+                a->ty = TY_PTR;
+                a->htype = ti + 1;
+            } else if (types[ti].kind == 0) {
+                a->stype = ti + 1;
+            } else if (types[ti].kind == 1) {
+                apply_alias(a, types[ti].al);
+            } else {
+                a->fix = 1;
+                a->base = 1;
+                a->p = types[ti].prec;
+                a->ord = ti + 1;
+            }
+        } else if (!strcmp(k, "unsigned")) {
+            nxt(); a->uns = 1;
+        } else if (!strcmp(k, "signed")) {
+            nxt();
+        } else if (!strcmp(k, "value")) {
+            nxt();
+            a->init = p_initlist();
         } else if (!strcmp(k, "like")) {
             nxt(); a->like = expid();
         } else if (!strcmp(k, "stream") || !strcmp(k, "sequential") ||
@@ -521,6 +725,11 @@ static void p_attrs(Attr *a)
         } else {
             perr(TK.line, "unknown attribute", k);
         }
+    }
+    if (a->uns && a->fix == 1 && a->base == 1 && a->p > 0 &&
+        a->p < 63) {
+        a->p++;
+        a->uns = 0;
     }
 }
 
@@ -566,6 +775,15 @@ static Node *p_decl(void)
             *it->at = *at;
             if (t) t->next = it; else h = it;
             t = it;
+            if (at->stype) {
+                Node *tl, *mem;
+                mem = copy_members(types[at->stype - 1].items->next,
+                                   (lvl > 0 ? lvl : 1), &tl);
+                if (mem) {
+                    t->next = mem;
+                    t = tl;
+                }
+            }
         }
         if (isop(",")) { nxt(); continue; }
         break;
@@ -764,7 +982,7 @@ static int iskw(const char *s)
         "proc", "call", "return", "goto", "go", "leave", "iterate",
         "select", "stop", "exit", "declare", "dcl", "put", "get",
         "open", "close", "read", "write", "rewrite", "delete",
-        "allocate",
+        "allocate", "define", "assert",
         "alloc", "free", "on", "revert", "signal", "display", "end",
         0 };
     int i;
@@ -1025,6 +1243,30 @@ static Node *p_stmt(void)
             n = p_select(line);
         } else if (!strcmp(k, "stop") || !strcmp(k, "exit")) {
             n = newnode(S_STOP, line);
+            expop(";");
+        } else if (!strcmp(k, "define")) {
+            p_define(line);
+            expop(";");
+            n = newnode(S_NULL, line);
+        } else if (!strcmp(k, "assert")) {
+            char *w = expid();
+            n = newnode(S_ASSERT, line);
+            if (!strcmp(w, "unreachable")) {
+                n->fl = 2;
+            } else if (!strcmp(w, "true") || !strcmp(w, "false")) {
+                n->fl = w[0] == 'f';
+                expop("(");
+                n->a = p_expr();
+                expop(")");
+            } else {
+                perr(line, "ASSERT needs TRUE, FALSE or UNREACHABLE", 0);
+            }
+            if (isid("text")) {
+                nxt();
+                expop("(");
+                n->b = p_expr();
+                expop(")");
+            }
             expop(";");
         } else if (!strcmp(k, "declare") || !strcmp(k, "dcl")) {
             n = newnode(S_DECL, line);

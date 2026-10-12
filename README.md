@@ -39,8 +39,11 @@ For CMS, compile `pli_all.c` (made by `tools/amalg.sh`) and keep
 `plirt.h` on an accessed disk. The CMS build is not yet tested.
 
 It implements a large subset of PL/I with more than PL/I (F): SELECT,
-LEAVE/ITERATE, DO UNTIL, TRIM/REVERSE/UPPERCASE/LOWERCASE, %REPLACE
-and free-format source. It lacks COMPLEX, PICTURE, DEFINED, AREA,
-GENERIC, multitasking and the full preprocessor.
+LEAVE/ITERATE, DO UNTIL, TRIM/REVERSE/UPPERCASE/LOWERCASE, COMPLEX,
+PICTURE, DEFINED, AREA, keyed record files, the full preprocessor
+(%IF, %DO, %PROCEDURE, -D) and free-format source. From Enterprise
+PL/I it has DEFINE STRUCTURE/ALIAS/ORDINAL, TYPE, HANDLE, UNSIGNED,
+ASSERT and exact 64-bit integers. It lacks GENERIC, multitasking,
+VSAM and WIDECHAR.
 
 The manual is `docs/PLI-User-Guide.docx` (build: `sh docs/make_manual.sh`).

@@ -1,0 +1,65 @@
+/* Enterprise PL/I: DEFINE, TYPE, ORDINAL, HANDLE, UNSIGNED */
+ty: procedure options(main);
+define alias money fixed decimal(9,2);
+define alias counter fixed bin(31);
+define structure
+   1 point,
+     2 x fixed bin(31),
+     2 y fixed bin(31);
+define structure
+   1 shape,
+     2 name char(8),
+     2 origin type point,
+     2 size fixed bin(31);
+define structure
+   1 node,
+     2 val fixed bin(31),
+     2 next handle node;
+define ordinal color (red, green, blue value(5), white);
+
+dcl price type money init(12.50);
+dcl n type counter init(3);
+dcl p type point;
+dcl sh type shape;
+dcl tab(2) type point;
+dcl c type color init(green);
+dcl big unsigned fixed bin(16) init(60000);
+dcl lim fixed bin(31) value(42);
+dcl head handle node;
+dcl h2 handle node;
+dcl s char(20) varying;
+
+p.x = 3;  p.y = 4;
+sh.name = 'circle';
+sh.origin.x = 10;
+sh.origin.y = 20;
+sh.size = 5;
+tab(2).y = 99;
+put skip list ('money', price, n);
+put skip list ('p', p.x, p.y);
+put skip list ('shape', sh.name, sh.origin.x, sh.origin.y, sh.size);
+put skip list ('tab', tab(2).y);
+put skip list ('color', c, red, blue, white);
+put skip list ('names', ordinalname(c), ordinalname(blue));
+c = ordinalsucc(c);
+put skip list ('succ', ordinalname(c), ordinalpred(c));
+put skip list ('unsigned', big, lim);
+
+allocate head;
+head->val = 1;
+allocate h2;
+h2->val = 2;
+head->next = h2;
+h2->next = null();
+put skip list ('list', head->val, head->next->val);
+free h2;
+
+s = 'a-b';
+put skip list ('sind', sind(30), cosd(60), atand(1));
+put skip list ('verifyr', verifyr('abcxx', 'x'), search('hello', 'lo'));
+put skip list ('searchr', searchr('hello', 'l'), tally('banana', 'an'));
+put skip list ('rank', rank('A'), byte(66), maxlength(s));
+assert true(n = 3) text('n is three');
+assert false(n = 4);
+put skip list ('asserts ok');
+end ty;

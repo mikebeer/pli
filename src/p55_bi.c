@@ -11,7 +11,10 @@ static const char *bi_names[] = {
     "precision", "add", "multiply", "divide", "addr", "null", "date",
     "time", "oncode", "random", "allocation", "lineno", "low", "high",
     "left", "right", "center", "real", "unspec", "complex",
-    "conjg", "imag", 0
+    "conjg", "imag", "sind", "cosd", "tand", "asind", "acosd",
+    "atand", "asinh", "acosh", "atanh", "verifyr", "search",
+    "searchr", "tally", "rank", "byte", "maxlength", "ordinalname",
+    "ordinalpred", "ordinalsucc", 0
 };
 
 static int name_is_builtin(const char *n)
@@ -51,7 +54,10 @@ static const char *math1[][2] = {
     { "log10", "pl_log10" }, { "log2", "pl_log2" }, { "sin", "sin" },
     { "cos", "cos" }, { "tan", "tan" }, { "asin", "asin" },
     { "acos", "acos" }, { "sinh", "sinh" }, { "cosh", "cosh" },
-    { "tanh", "tanh" }, { 0, 0 }
+    { "tanh", "tanh" }, { "sind", "pl_sind" }, { "cosd", "pl_cosd" },
+    { "tand", "pl_tand" }, { "asind", "pl_asind" },
+    { "acosd", "pl_acosd" }, { "asinh", "pl_asinh" },
+    { "acosh", "pl_acosh" }, { "atanh", "pl_atanh" }, { 0, 0 }
 };
 
 static const char *int1[][2] = {
@@ -68,7 +74,7 @@ static int arrarg(Node *a, char **ptr, char **cnt, int *isl)
     s = lookup(a->s);
     if (!s || s->cls != C_VAR || !s->nd || a->a) return 0;
     v = rl(a);
-    if (!is_num(s) || s->star || s->isparam)
+    if (!is_num(s) || s->star || s->isparam || is_wide(s))
         perr(a->line, "numeric array expected", a->s);
     *isl = is_long(s);
     *ptr = cat3(*isl ? "(const long *)" : "(const double *)", v.t, "");
@@ -155,6 +161,14 @@ static char *gbuiltin(Node *e, int *k)
         ge_f = 6;
         return cat5("atan2(", a, ", ", b, ")");
     }
+    if (!strcmp(n, "atand")) {
+        need(e, 1, 2);
+        a = cnum(argn(e, 0));
+        ge_q = -1;
+        ge_f = 6;
+        if (nargs(e) == 1) return cat3("pl_atand(", a, ")");
+        return cat5("pl_atan2d(", a, ", ", cnum(argn(e, 1)), ")");
+    }
     if (!strcmp(n, "mod") || !strcmp(n, "rem")) {
         need(e, 2, 2);
         a = cnum(argn(e, 0));
@@ -235,6 +249,79 @@ static char *gbuiltin(Node *e, int *k)
         ge_q = 0;
         return cat5(n[0] == 'i' ? "pl_idx(" : "pl_ver(", a, ", ", b,
                     ")");
+    }
+    if (!strcmp(n, "verifyr") || !strcmp(n, "search") ||
+        !strcmp(n, "searchr") || !strcmp(n, "tally")) {
+        need(e, 2, 2);
+        a = cstr(argn(e, 0));
+        b = cstr(argn(e, 1));
+        ge_q = 0;
+        if (n[0] == 'v') return cat5("pl_verr(", a, ", ", b, ")");
+        if (n[0] == 't') return cat5("pl_tally(", a, ", ", b, ")");
+        return cat5("pl_srch(", a, ", ", b, n[6] ? ", 1)" : ", 0)");
+    }
+    if (!strcmp(n, "ordinalname") || !strcmp(n, "ordinalpred") ||
+        !strcmp(n, "ordinalsucc")) {
+        static char done[128];
+        LV v;
+        int oi = 0;
+        TypeDef *t;
+        int j;
+        need(e, 1, 1);
+        if (argn(e, 0)->k == X_NUM && argn(e, 0)->s) {
+            oi = find_type(argn(e, 0)->s) + 1;
+        } else if (argn(e, 0)->k == X_REF) {
+            v = rl(argn(e, 0));
+            oi = v.nu ? 0 : v.s->ord;
+        }
+        if (oi < 1) perr(e->line, "ORDINAL value expected in", n);
+        t = &types[oi - 1];
+        a = cnum(argn(e, 0));
+        if (!done[oi - 1]) {
+            Sb sn, sv;
+            memset(&sn, 0, sizeof sn);
+            memset(&sv, 0, sizeof sv);
+            for (j = 0; j < t->nord; j++) {
+                sb_s(&sn, cat3(j ? ", \"" : "\"", t->onm[j], "\""));
+                sb_s(&sv, cat2(j ? ", " : "", itoa_(t->ov[j])));
+            }
+            sb_s(&gdecl, cat5("static const char *ordn", itoa_(oi),
+                              "[] = { ", sb_str(&sn), " };\n"));
+            sb_s(&gdecl, cat5("static const long ordv", itoa_(oi),
+                              "[] = { ", sb_str(&sv), " };\n"));
+            done[oi - 1] = 1;
+        }
+        if (n[7] != 'n') {
+            ge_q = 0;
+            return cat5("pl_ostep(", a, ", ordv", itoa_(oi),
+                        cat5(", ", itoa_(t->nord),
+                             n[7] == 'p' ? ", -1)" : ", 1)", "", ""));
+        }
+        *k = K_S;
+        return cat5("pl_ordn(", a, cat3(", ordn", itoa_(oi), ", "),
+                    cat3("ordv", itoa_(oi), ", "),
+                    cat2(itoa_(t->nord), ")"));
+    }
+    if (!strcmp(n, "rank")) {
+        need(e, 1, 1);
+        ge_q = 0;
+        return cat3("pl_rank(", cstr(argn(e, 0)), ")");
+    }
+    if (!strcmp(n, "byte")) {
+        need(e, 1, 1);
+        *k = K_S;
+        return cat3("pl_byte(", cnum(argn(e, 0)), ")");
+    }
+    if (!strcmp(n, "maxlength")) {
+        LV v;
+        need(e, 1, 1);
+        if (argn(e, 0)->k != X_REF)
+            perr(e->line, "MAXLENGTH needs a string variable", 0);
+        v = rl(argn(e, 0));
+        if ((v.s->ty != TY_CHR && v.s->ty != TY_BIT) || v.s->len < 0)
+            perr(e->line, "MAXLENGTH needs a sized string", 0);
+        ge_q = 0;
+        return itoa_(v.s->len);
     }
     if (!strcmp(n, "substr")) {
         Node *s0 = argn(e, 0);

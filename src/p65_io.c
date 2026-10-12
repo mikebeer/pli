@@ -34,8 +34,11 @@ static void put_el(Sym *s, char *lv, void *arg)
     IoArg *ia = (IoArg *)arg;
     LV v;
     v.t = lv; v.s = s; v.nu = 0;
-    if (is_num(s)) {
-        char *val = is_long(s) ? cat3("(double)", lv, "") : lv;
+    if (is_wide(s) && ia->mode != 2 && ia->mode != 3) {
+        ln(cat5("pl_li_w(", ia->ft, ", ", lv, ");"));
+    } else if (is_num(s)) {
+        char *val = is_long(s) || is_wide(s) ?
+                    cat3("(double)", lv, "") : lv;
         int q = s->ty == TY_FLT ? -1 : s->q;
         int f = s->ty == TY_FLT ? s->p : 0;
         if (ia->mode == 2)
@@ -65,8 +68,8 @@ static void get_el(Sym *s, char *lv, void *arg)
     v.t = lv; v.s = s; v.nu = 0;
     if (is_num(s)) {
         char *d = newtemp("double");
-        ln(cat4(d, " = ", is_long(s) ? cat3("(double)", lv, "") : lv,
-                ";"));
+        ln(cat4(d, " = ", is_long(s) || is_wide(s) ?
+                cat3("(double)", lv, "") : lv, ";"));
         ln(cat5(ia->mode == 2 ? "pl_gn(" : "pl_gn_l(", ia->ft,
                 ", &", d, ");"));
         ln(numstore(s, lv, d));
@@ -132,6 +135,14 @@ static void do_item(Node *it, IoArg *ia)
         if (s && s->cls == C_VAR && s->nd && !e->a) {
             LV l = rl(e);
             forall(l.s, l.t, put_el, ia);
+            return;
+        }
+    }
+    if (ia->mode != 2 && ia->mode != 3) {
+        int w = 0;
+        char *iw = iexpr(e, &w, 1);
+        if (iw && w) {
+            ln(cat5("pl_li_w(", ia->ft, ", ", iw, ");"));
             return;
         }
     }

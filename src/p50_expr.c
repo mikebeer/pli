@@ -242,6 +242,41 @@ static Sym *findmember(Sym *s, const char *nm, char **path)
     return 0;
 }
 
+static LV rl(Node *r);
+
+/* h->member where h is a HANDLE */
+static int hrl(Node *r, LV *out)
+{
+    LV pv, v;
+    Sym *hs, *s, *m;
+    char *t, *mp;
+    Node *q;
+    int nu;
+    if (!r->c) return 0;
+    pv = rl(r->c);
+    if (pv.s->ty != TY_PTR || pv.nu || !pv.s->hs) return 0;
+    hs = pv.s->hs;
+    t = cat5("(*(", hs->tn, " *)(", pv.t, "))");
+    m = findmember(hs, r->s, &mp);
+    if (!m) perr(r->line, "no such member:", r->s);
+    t = cat3(t, ".", mp);
+    s = m;
+    t = subtext(s, r->a, r->line, &nu, t);
+    for (q = r->b; q; q = q->b) {
+        if (nu) perr(q->line, "subscripts needed before .", 0);
+        m = findmember(s, q->s, &mp);
+        if (!m) perr(q->line, "no such member:", q->s);
+        t = cat3(t, ".", mp);
+        s = m;
+        t = subtext(s, q->a, q->line, &nu, t);
+    }
+    v.t = t;
+    v.s = s;
+    v.nu = nu;
+    *out = v;
+    return 1;
+}
+
 static LV rl(Node *r)
 {
     LV v;
@@ -250,6 +285,7 @@ static LV rl(Node *r)
     Node *q;
     Node *pe = r->c;
     int nu;
+    if (hrl(r, &v)) return v;
     s = lookup(r->s);
     if (!s) {
         if (r->c || r->fl) perr(r->line, "undeclared name", r->s);
@@ -302,7 +338,8 @@ static char *ref_value(Node *e, int *k)
         *k = K_N;
         if (s->ty == TY_FLT) ge_f = s->p;
         else ge_q = s->q;
-        return is_long(s) ? cat3("((double)", v.t, ")") : v.t;
+        return is_long(s) || is_wide(s) ? cat3("((double)", v.t, ")") :
+               v.t;
     case TY_CHR:
         *k = K_S;
         return cat3("pl_ps(", pvtxt(v), ")");
@@ -324,7 +361,8 @@ static char *ref_value(Node *e, int *k)
 
 static int same_store(Sym *a, Sym *b)
 {
-    return a->ty == b->ty && is_long(a) == is_long(b);
+    return a->ty == b->ty && is_long(a) == is_long(b) &&
+           is_wide(a) == is_wide(b);
 }
 
 /* built-in functions whose result is COMPLEX */
@@ -425,6 +463,7 @@ static char *argp(Sym *pm, Node *a)
             return cat2("&", v.t);
         uses_tmp = 1;
         if (is_long(pm)) return cat3("pl_tlp(", cnum(a), ")");
+        if (is_wide(pm)) return cat3("pl_twp(", cnum(a), ")");
         return cat3("pl_tdp(", cnum(a), ")");
     }
     (void)k;
@@ -525,6 +564,84 @@ static int iscmp_s(const char *o)
            !strcmp(o, "<=") || !strcmp(o, ">=") || !strcmp(o, "!=");
 }
 
+/* exact 64-bit evaluation of an all-integer expression: the C text,
+   or 0.  *w is set when a 64-bit variable takes part. */
+static char *iexpr(Node *e, int *w, int top)
+{
+    char *a, *b;
+    Sym *s;
+    LV v;
+    switch (e->k) {
+    case X_NUM:
+        if (e->fl || e->im || e->n != 0) return 0;
+        if (e->a) {
+            const char *d = e->a->s;
+            size_t n = strlen(d);
+            char hi[12], mid[8], lo[8];
+            if (n < 13 || n > 19) return 0;
+            memcpy(lo, d + n - 6, 6);
+            lo[6] = 0;
+            memcpy(mid, d + n - 12, 6);
+            mid[6] = 0;
+            memcpy(hi, d, n - 12);
+            hi[n - 12] = 0;
+            if (n == 19 && strcmp(d, "9223372036854775807") > 0)
+                return 0;
+            return cat5("pl_w3(", itoa_(atol(hi)), ", ",
+                        itoa_(atol(mid)), cat3(", ", itoa_(atol(lo)),
+                                               ")"));
+        }
+        if (e->dv >= 9.0e15 || e->dv <= -9.0e15) return 0;
+        if (e->dv < 2147483648.0)
+            return cat3("((pl_i64)", itoa_((long)e->dv), ")");
+        return cat3("((pl_i64)", dtoa_(e->dv), ")");
+    case X_REF:
+        if (e->c) return 0;
+        s = lookup(e->s);
+        if (!s) {
+            Node *a0 = e->a, *a1 = a0 ? a0->next : 0;
+            if (!strcmp(e->s, "mod") && a1 && !a1->next && !e->b) {
+                a = iexpr(a0, w, 0);
+                b = a ? iexpr(a1, w, 0) : 0;
+                if (b) return cat5("pl_wmod(", a, ", ", b, ")");
+            }
+            return 0;
+        }
+        if (s->cls != C_VAR || !is_num(s) || s->picnum) return 0;
+        if (s->ty != TY_FXB && !(s->ty == TY_FXD && s->q == 0 &&
+                                 s->p <= 18))
+            return 0;
+        v = rl(e);
+        if (v.nu) return 0;
+        if (is_wide(s)) *w = 1;
+        return cat3("((pl_i64)", v.t, ")");
+    case X_UN:
+        if (e->s[0] != '-' && e->s[0] != '+') return 0;
+        a = iexpr(e->a, w, 0);
+        if (!a || e->s[0] == '+') return a;
+        return cat3("pl_wsub((pl_i64)0, ", a, ")");
+    case X_BIN:
+        if (strcmp(e->s, "+") && strcmp(e->s, "-") &&
+            strcmp(e->s, "*") && strcmp(e->s, "**") &&
+            !(top && !strcmp(e->s, "/")))
+            return 0;
+        a = iexpr(e->a, w, 0);
+        if (!a) return 0;
+        if (!strcmp(e->s, "**")) {
+            if (e->b->k != X_NUM || e->b->fl || e->b->dv < 0 ||
+                e->b->dv > 64)
+                return 0;
+            return cat5("pl_wpow(", a, ", ", itoa_((long)e->b->dv), ")");
+        }
+        b = iexpr(e->b, w, 0);
+        if (!b) return 0;
+        return cat5(e->s[0] == '+' ? "pl_wadd(" : e->s[0] == '-' ?
+                    "pl_wsub(" : e->s[0] == '*' ? "pl_wmul(" :
+                    "pl_wdiv(", a, ", ", b, ")");
+    }
+    return 0;
+}
+
 static char *gbin(Node *e, int *k)
 {
     char *o = e->s;
@@ -579,6 +696,15 @@ static char *gbin(Node *e, int *k)
                     ", 1)");
     }
     if (iscmp_s(o)) {
+        int w = 0;
+        char *ia = iexpr(e->a, &w, 0), *ib = ia ? iexpr(e->b, &w, 0) : 0;
+        if (ia && ib && w) {
+            *k = K_N;
+            ge_q = -1;
+            ge_f = 0;
+            return cat5("(pl_wcmp(", ia, ", ", ib,
+                        cat3(") ", cmpop(o), " 0)"));
+        }
         a = ge(e->a, &ka);
         b = ge(e->b, &kb);
         *k = K_N;

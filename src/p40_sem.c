@@ -121,6 +121,13 @@ static int is_long(Sym *s)
            (s->ty == TY_FXD && s->q == 0 && s->p <= 9);
 }
 
+/* FIXED BIN(32..63) and FIXED DEC(10..18,0): 64-bit integers */
+static int is_wide(Sym *s)
+{
+    return (s->ty == TY_FXB && s->p > 31) ||
+           (s->ty == TY_FXD && s->q == 0 && s->p > 9 && s->p <= 18);
+}
+
 /* functions declared by the C headers that plirt.h includes: a
    prototype of our own would conflict with the real one */
 static int is_libc(const char *n)
@@ -255,6 +262,7 @@ static int pic_width(const char *p)
 static void apply_type(Sym *s, Attr *a)
 {
     s->ext = a->ext;
+    s->ord = a->ord;
     if (a->pic) {
         s->pic = pic_expand(a->pic);
         s->picnum = strpbrk(s->pic, "AX") == 0;
@@ -394,8 +402,8 @@ static char *base_text(Sym *s)
     Sb b;
     char *nm;
     switch (s->ty) {
-    case TY_FXB: return is_long(s) ? "long" : "double";
-    case TY_FXD: return is_long(s) ? "long" : "double";
+    case TY_FXB: case TY_FXD:
+        return is_long(s) ? "long" : (is_wide(s) ? "pl_i64" : "double");
     case TY_FLT: return "double";
     case TY_CPX: return "PC";
     case TY_AREA:
@@ -505,10 +513,26 @@ static void emit_storage(Sym *s)
     }
 }
 
+static void decl_items(Scope *sc, Node *it);
+static Sym *find_in_scope(Scope *sc, const char *name);
+
 static void setup_sym(Sym *s, Node *it, Scope *sc)
 {
     Attr *a = it->at;
     apply_type(s, a);
+    if (a->htype) {
+        char *hname;
+        Node *hn = 0;
+        Sym *hs;
+        hname = cat2("hnd_", types[a->htype - 1].name);
+        hs = find_in_scope(root, hname);
+        if (!hs) {
+            hn = hidden_struct(a->htype - 1, &hname);
+            decl_items(root, hn);
+            hs = find_in_scope(root, hname);
+        }
+        s->hs = hs;
+    }
     s->stor = a->stor;
     s->init = a->init;
     s->based = a->based;

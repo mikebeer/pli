@@ -6,6 +6,7 @@ static int c_conv = 0;          /* parameters in the C convention */
 static const char *ptype(Sym *pm)
 {
     if (is_long(pm)) return "long ";
+    if (is_wide(pm)) return "pl_i64 ";
     if (pm->ty == TY_PTR) return "void *";
     if (pm->ty == TY_CPX) return "PC ";
     return "double ";
@@ -54,8 +55,8 @@ static char *param_decl(Sym *pm, Fn *f)
             el = pm->vary ? "struct { long n; char s[1]; }" : "char";
             if (pm->vary) perr(0, "VARYING array parameter", pm->name);
         } else {
-            el = is_long(pm) ? "long" : (pm->ty == TY_PTR ?
-                                         "void *" : "double");
+            el = is_long(pm) ? "long" : (is_wide(pm) ? "pl_i64" :
+                 (pm->ty == TY_PTR ? "void *" : "double"));
         }
         if (pm->star && c_conv && f)
             perr(0, "C-convention array needs explicit bounds:",

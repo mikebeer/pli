@@ -29,6 +29,7 @@ typedef struct {
     double dv;
     int fl;             /* STR: 1 bit, NUM: 1 float */
     int im;             /* NUM: imaginary constant (3.5I) */
+    char *ord;          /* NUM: from this ORDINAL type */
     int q;              /* NUM: decimals / mantissa digits */
     int line;
     char *file;
@@ -43,7 +44,7 @@ enum {
     S_GOTO, S_LEAVE, S_ITER, S_SELECT, S_WHEN, S_STOP, S_NULL,
     S_DECL, S_PUT, S_GET, S_OPEN, S_CLOSE, S_READ, S_WRITE,
     S_ALLOC, S_FREE, S_ON, S_REVERT, S_SIGNAL, S_DISPLAY,
-    S_END, S_REWRITE, S_DELETE,
+    S_END, S_REWRITE, S_DELETE, S_ASSERT,
     N_SPEC = 60, N_ITEM, N_DO, N_FMT, N_BND, N_OPT
 };
 
@@ -65,6 +66,9 @@ struct Attr {
     char *pic;          /* PICTURE string */
     char *defbase;      /* DEFINED base variable */
     Node *defpos;       /* POSITION of a DEFINED string */
+    int uns, ord;       /* UNSIGNED; ORDINAL type number */
+    int stype;          /* TYPE of a structure: type number */
+    int htype;          /* HANDLE: structure type number */
 };
 
 struct Node {
@@ -116,6 +120,8 @@ struct Sym {
     int picnum;         /* numeric picture */
     char *defbase;      /* DEFINED base variable */
     long defpos;        /* POSITION of a DEFINED string, 1 up */
+    Sym *hs;            /* HANDLE: the structure it points to */
+    int ord;            /* ORDINAL type number */
 };
 
 struct Scope {
@@ -1637,6 +1643,12 @@ static Node *p_prim(void)
         n->dv = TK.dv;
         n->fl = TK.fl;
         n->im = TK.im;
+        n->s = TK.ord;
+        if (!TK.fl && !TK.q && !TK.im && TK.dv >= 1e12 &&
+            strlen(TK.s) >= 13) {
+            n->a = newnode(X_STR, TK.line);
+            n->a->s = TK.s;
+        }
         n->n = TK.q;
         nxt();
         return n;
@@ -1876,6 +1888,7 @@ static Node *p_initlist(void)
 }
 
 static void p_attrs(Attr *a);
+static Node *p_decl(void);
 
 /* ENTRY(desc, desc, ...): one attribute list per parameter */
 static void p_entry_desc(Attr *a)
@@ -1916,6 +1929,173 @@ static int p_options(void)
     }
     nxt();
     return fl;
+}
+
+/* ---- DEFINE STRUCTURE / ALIAS / ORDINAL ---- */
+
+typedef struct {
+    char *name;
+    int kind;           /* 0 structure, 1 alias, 2 ordinal */
+    Node *items;
+    Attr *al;
+    int nord, prec;
+    char **onm;
+    long *ov;
+} TypeDef;
+static TypeDef types[128];
+static int ntypes = 0;
+
+static Attr *newattr(void)
+{
+    Attr *a = (Attr *)xalloc((long)sizeof(Attr));
+    a->len = -2;
+    a->p = -1;
+    a->q = -1;
+    return a;
+}
+
+static int find_type(const char *nm)
+{
+    int i;
+    for (i = 0; i < ntypes; i++)
+        if (!strcmp(types[i].name, nm)) return i;
+    return -1;
+}
+
+static TypeDef *new_type(const char *nm, int kind, int line)
+{
+    TypeDef *t;
+    if (find_type(nm) >= 0)
+        perr(line, "type already defined:", nm);
+    if (ntypes >= 128) perr(line, "too many type definitions", 0);
+    t = &types[ntypes++];
+    memset(t, 0, sizeof *t);
+    t->name = xdup(nm);
+    t->kind = kind;
+    return t;
+}
+
+static void apply_alias(Attr *a, Attr *al)
+{
+    if (al->ty) a->ty = al->ty;
+    if (al->fix) a->fix = al->fix;
+    if (al->base) a->base = al->base;
+    if (al->p != -1) a->p = al->p;
+    if (al->q != -1) a->q = al->q;
+    if (al->len != -2) a->len = al->len;
+    a->vary |= al->vary;
+    a->cpx |= al->cpx;
+    a->isfile |= al->isfile;
+    a->uns |= al->uns;
+    if (al->pic) a->pic = al->pic;
+    if (al->ord) a->ord = al->ord;
+    if (al->stype) a->stype = al->stype;
+    if (al->htype) a->htype = al->htype;
+}
+
+/* the member items of a structure type at level base */
+static Node *copy_members(Node *m, int base, Node **tail)
+{
+    Node *h = 0, *t = 0, *c;
+    for (; m; m = m->next) {
+        c = newnode(N_ITEM, m->line);
+        *c = *m;
+        c->next = 0;
+        c->n = base + m->n - 1;
+        if (t) t->next = c; else h = c;
+        t = c;
+    }
+    *tail = t;
+    return h;
+}
+
+/* a hidden BASED copy of the structure, for HANDLE */
+static Node *hidden_struct(int ti, char **hname)
+{
+    Node *h, *tl;
+    char b[100];
+    sprintf(b, "hnd_%.80s", types[ti].name);
+    h = copy_members(types[ti].items, 1, &tl);
+    h->s = xdup(b);
+    h->at = newattr();
+    *h->at = *types[ti].items->at;
+    h->at->stor = ST_BASED;
+    *hname = h->s;
+    return h;
+}
+
+static void p_define(int line)
+{
+    char *kind = expid(), *nm;
+    TypeDef *t;
+    if (!strcmp(kind, "alias")) {
+        Attr *al = newattr();
+        nm = expid();
+        p_attrs(al);
+        t = new_type(nm, 1, line);
+        t->al = al;
+    } else if (!strcmp(kind, "structure")) {
+        Node *it;
+        if (TK.k != T_NUM || TK1.k != T_ID)
+            perr(line, "DEFINE STRUCTURE needs a level 1 name", 0);
+        t = new_type(TK1.s, 0, line);
+        it = p_decl();
+        if (it->n > 1)
+            perr(line, "DEFINE STRUCTURE needs a level 1 name", 0);
+        t->items = it;
+    } else if (!strcmp(kind, "ordinal")) {
+        long v = 0, i;
+        nm = expid();
+        t = new_type(nm, 2, line);
+        t->prec = 31;
+        t->onm = (char **)xalloc(256 * (long)sizeof(char *));
+        t->ov = (long *)xalloc(256 * (long)sizeof(long));
+        expop("(");
+        for (;;) {
+            if (t->nord >= 256) perr(line, "ORDINAL too long", 0);
+            t->onm[t->nord] = expid();
+            if (isid("value")) {
+                nxt();
+                expop("(");
+                v = (long)cval(p_expr());
+                expop(")");
+            }
+            t->ov[t->nord++] = v++;
+            if (isop(",")) { nxt(); continue; }
+            break;
+        }
+        expop(")");
+        while (TK.k == T_ID) {
+            if (isid("prec") || isid("precision")) {
+                nxt();
+                expop("(");
+                t->prec = (int)cval(p_expr());
+                expop(")");
+            } else if (isid("unsigned") || isid("signed")) {
+                nxt();
+            } else break;
+        }
+        /* the names are constants from here on */
+        for (i = ptk; i < tokens.n; i++) {
+            long j;
+            Tok *x = &tokens.a[i];
+            if (x->k != T_ID) continue;
+            if (i > 0 && tisop(&tokens.a[i - 1], ".")) continue;
+            for (j = 0; j < t->nord; j++)
+                if (!strcmp(x->s, t->onm[j])) {
+                    char b[40];
+                    sprintf(b, "%ld", t->ov[j]);
+                    x->k = T_NUM;
+                    x->s = xdup(b);
+                    x->dv = (double)t->ov[j];
+                    x->q = 0;
+                    x->fl = 0;
+                    x->ord = t->name;
+                }
+        }
+    } else {
+        perr(line, "DEFINE needs ALIAS, STRUCTURE or ORDINAL", 0);
+    }
 }
 
 static void p_attrs(Attr *a)
@@ -2016,6 +2196,36 @@ static void p_attrs(Attr *a)
             else a->defbase = expid();
         } else if (!strcmp(k, "position") || !strcmp(k, "pos")) {
             nxt(); expop("("); a->defpos = p_expr(); expop(")");
+        } else if (!strcmp(k, "type") || !strcmp(k, "ordinal") ||
+                   !strcmp(k, "handle")) {
+            int hd = k[0] == 'h', ti;
+            char *tn;
+            nxt();
+            tn = expid();
+            ti = find_type(tn);
+            if (ti < 0) perr(TK.line, "unknown type:", tn);
+            if (hd) {
+                if (types[ti].kind != 0)
+                    perr(TK.line, "HANDLE needs a structure type", 0);
+                a->ty = TY_PTR;
+                a->htype = ti + 1;
+            } else if (types[ti].kind == 0) {
+                a->stype = ti + 1;
+            } else if (types[ti].kind == 1) {
+                apply_alias(a, types[ti].al);
+            } else {
+                a->fix = 1;
+                a->base = 1;
+                a->p = types[ti].prec;
+                a->ord = ti + 1;
+            }
+        } else if (!strcmp(k, "unsigned")) {
+            nxt(); a->uns = 1;
+        } else if (!strcmp(k, "signed")) {
+            nxt();
+        } else if (!strcmp(k, "value")) {
+            nxt();
+            a->init = p_initlist();
         } else if (!strcmp(k, "like")) {
             nxt(); a->like = expid();
         } else if (!strcmp(k, "stream") || !strcmp(k, "sequential") ||
@@ -2051,6 +2261,11 @@ static void p_attrs(Attr *a)
         } else {
             perr(TK.line, "unknown attribute", k);
         }
+    }
+    if (a->uns && a->fix == 1 && a->base == 1 && a->p > 0 &&
+        a->p < 63) {
+        a->p++;
+        a->uns = 0;
     }
 }
 
@@ -2096,6 +2311,15 @@ static Node *p_decl(void)
             *it->at = *at;
             if (t) t->next = it; else h = it;
             t = it;
+            if (at->stype) {
+                Node *tl, *mem;
+                mem = copy_members(types[at->stype - 1].items->next,
+                                   (lvl > 0 ? lvl : 1), &tl);
+                if (mem) {
+                    t->next = mem;
+                    t = tl;
+                }
+            }
         }
         if (isop(",")) { nxt(); continue; }
         break;
@@ -2294,7 +2518,7 @@ static int iskw(const char *s)
         "proc", "call", "return", "goto", "go", "leave", "iterate",
         "select", "stop", "exit", "declare", "dcl", "put", "get",
         "open", "close", "read", "write", "rewrite", "delete",
-        "allocate",
+        "allocate", "define", "assert",
         "alloc", "free", "on", "revert", "signal", "display", "end",
         0 };
     int i;
@@ -2555,6 +2779,30 @@ static Node *p_stmt(void)
             n = p_select(line);
         } else if (!strcmp(k, "stop") || !strcmp(k, "exit")) {
             n = newnode(S_STOP, line);
+            expop(";");
+        } else if (!strcmp(k, "define")) {
+            p_define(line);
+            expop(";");
+            n = newnode(S_NULL, line);
+        } else if (!strcmp(k, "assert")) {
+            char *w = expid();
+            n = newnode(S_ASSERT, line);
+            if (!strcmp(w, "unreachable")) {
+                n->fl = 2;
+            } else if (!strcmp(w, "true") || !strcmp(w, "false")) {
+                n->fl = w[0] == 'f';
+                expop("(");
+                n->a = p_expr();
+                expop(")");
+            } else {
+                perr(line, "ASSERT needs TRUE, FALSE or UNREACHABLE", 0);
+            }
+            if (isid("text")) {
+                nxt();
+                expop("(");
+                n->b = p_expr();
+                expop(")");
+            }
             expop(";");
         } else if (!strcmp(k, "declare") || !strcmp(k, "dcl")) {
             n = newnode(S_DECL, line);
@@ -2848,6 +3096,13 @@ static int is_long(Sym *s)
            (s->ty == TY_FXD && s->q == 0 && s->p <= 9);
 }
 
+/* FIXED BIN(32..63) and FIXED DEC(10..18,0): 64-bit integers */
+static int is_wide(Sym *s)
+{
+    return (s->ty == TY_FXB && s->p > 31) ||
+           (s->ty == TY_FXD && s->q == 0 && s->p > 9 && s->p <= 18);
+}
+
 /* functions declared by the C headers that plirt.h includes: a
    prototype of our own would conflict with the real one */
 static int is_libc(const char *n)
@@ -2982,6 +3237,7 @@ static int pic_width(const char *p)
 static void apply_type(Sym *s, Attr *a)
 {
     s->ext = a->ext;
+    s->ord = a->ord;
     if (a->pic) {
         s->pic = pic_expand(a->pic);
         s->picnum = strpbrk(s->pic, "AX") == 0;
@@ -3121,8 +3377,8 @@ static char *base_text(Sym *s)
     Sb b;
     char *nm;
     switch (s->ty) {
-    case TY_FXB: return is_long(s) ? "long" : "double";
-    case TY_FXD: return is_long(s) ? "long" : "double";
+    case TY_FXB: case TY_FXD:
+        return is_long(s) ? "long" : (is_wide(s) ? "pl_i64" : "double");
     case TY_FLT: return "double";
     case TY_CPX: return "PC";
     case TY_AREA:
@@ -3232,10 +3488,26 @@ static void emit_storage(Sym *s)
     }
 }
 
+static void decl_items(Scope *sc, Node *it);
+static Sym *find_in_scope(Scope *sc, const char *name);
+
 static void setup_sym(Sym *s, Node *it, Scope *sc)
 {
     Attr *a = it->at;
     apply_type(s, a);
+    if (a->htype) {
+        char *hname;
+        Node *hn = 0;
+        Sym *hs;
+        hname = cat2("hnd_", types[a->htype - 1].name);
+        hs = find_in_scope(root, hname);
+        if (!hs) {
+            hn = hidden_struct(a->htype - 1, &hname);
+            decl_items(root, hn);
+            hs = find_in_scope(root, hname);
+        }
+        s->hs = hs;
+    }
     s->stor = a->stor;
     s->init = a->init;
     s->based = a->based;
@@ -3758,6 +4030,41 @@ static Sym *findmember(Sym *s, const char *nm, char **path)
     return 0;
 }
 
+static LV rl(Node *r);
+
+/* h->member where h is a HANDLE */
+static int hrl(Node *r, LV *out)
+{
+    LV pv, v;
+    Sym *hs, *s, *m;
+    char *t, *mp;
+    Node *q;
+    int nu;
+    if (!r->c) return 0;
+    pv = rl(r->c);
+    if (pv.s->ty != TY_PTR || pv.nu || !pv.s->hs) return 0;
+    hs = pv.s->hs;
+    t = cat5("(*(", hs->tn, " *)(", pv.t, "))");
+    m = findmember(hs, r->s, &mp);
+    if (!m) perr(r->line, "no such member:", r->s);
+    t = cat3(t, ".", mp);
+    s = m;
+    t = subtext(s, r->a, r->line, &nu, t);
+    for (q = r->b; q; q = q->b) {
+        if (nu) perr(q->line, "subscripts needed before .", 0);
+        m = findmember(s, q->s, &mp);
+        if (!m) perr(q->line, "no such member:", q->s);
+        t = cat3(t, ".", mp);
+        s = m;
+        t = subtext(s, q->a, q->line, &nu, t);
+    }
+    v.t = t;
+    v.s = s;
+    v.nu = nu;
+    *out = v;
+    return 1;
+}
+
 static LV rl(Node *r)
 {
     LV v;
@@ -3766,6 +4073,7 @@ static LV rl(Node *r)
     Node *q;
     Node *pe = r->c;
     int nu;
+    if (hrl(r, &v)) return v;
     s = lookup(r->s);
     if (!s) {
         if (r->c || r->fl) perr(r->line, "undeclared name", r->s);
@@ -3818,7 +4126,8 @@ static char *ref_value(Node *e, int *k)
         *k = K_N;
         if (s->ty == TY_FLT) ge_f = s->p;
         else ge_q = s->q;
-        return is_long(s) ? cat3("((double)", v.t, ")") : v.t;
+        return is_long(s) || is_wide(s) ? cat3("((double)", v.t, ")") :
+               v.t;
     case TY_CHR:
         *k = K_S;
         return cat3("pl_ps(", pvtxt(v), ")");
@@ -3840,7 +4149,8 @@ static char *ref_value(Node *e, int *k)
 
 static int same_store(Sym *a, Sym *b)
 {
-    return a->ty == b->ty && is_long(a) == is_long(b);
+    return a->ty == b->ty && is_long(a) == is_long(b) &&
+           is_wide(a) == is_wide(b);
 }
 
 /* built-in functions whose result is COMPLEX */
@@ -3941,6 +4251,7 @@ static char *argp(Sym *pm, Node *a)
             return cat2("&", v.t);
         uses_tmp = 1;
         if (is_long(pm)) return cat3("pl_tlp(", cnum(a), ")");
+        if (is_wide(pm)) return cat3("pl_twp(", cnum(a), ")");
         return cat3("pl_tdp(", cnum(a), ")");
     }
     (void)k;
@@ -4041,6 +4352,84 @@ static int iscmp_s(const char *o)
            !strcmp(o, "<=") || !strcmp(o, ">=") || !strcmp(o, "!=");
 }
 
+/* exact 64-bit evaluation of an all-integer expression: the C text,
+   or 0.  *w is set when a 64-bit variable takes part. */
+static char *iexpr(Node *e, int *w, int top)
+{
+    char *a, *b;
+    Sym *s;
+    LV v;
+    switch (e->k) {
+    case X_NUM:
+        if (e->fl || e->im || e->n != 0) return 0;
+        if (e->a) {
+            const char *d = e->a->s;
+            size_t n = strlen(d);
+            char hi[12], mid[8], lo[8];
+            if (n < 13 || n > 19) return 0;
+            memcpy(lo, d + n - 6, 6);
+            lo[6] = 0;
+            memcpy(mid, d + n - 12, 6);
+            mid[6] = 0;
+            memcpy(hi, d, n - 12);
+            hi[n - 12] = 0;
+            if (n == 19 && strcmp(d, "9223372036854775807") > 0)
+                return 0;
+            return cat5("pl_w3(", itoa_(atol(hi)), ", ",
+                        itoa_(atol(mid)), cat3(", ", itoa_(atol(lo)),
+                                               ")"));
+        }
+        if (e->dv >= 9.0e15 || e->dv <= -9.0e15) return 0;
+        if (e->dv < 2147483648.0)
+            return cat3("((pl_i64)", itoa_((long)e->dv), ")");
+        return cat3("((pl_i64)", dtoa_(e->dv), ")");
+    case X_REF:
+        if (e->c) return 0;
+        s = lookup(e->s);
+        if (!s) {
+            Node *a0 = e->a, *a1 = a0 ? a0->next : 0;
+            if (!strcmp(e->s, "mod") && a1 && !a1->next && !e->b) {
+                a = iexpr(a0, w, 0);
+                b = a ? iexpr(a1, w, 0) : 0;
+                if (b) return cat5("pl_wmod(", a, ", ", b, ")");
+            }
+            return 0;
+        }
+        if (s->cls != C_VAR || !is_num(s) || s->picnum) return 0;
+        if (s->ty != TY_FXB && !(s->ty == TY_FXD && s->q == 0 &&
+                                 s->p <= 18))
+            return 0;
+        v = rl(e);
+        if (v.nu) return 0;
+        if (is_wide(s)) *w = 1;
+        return cat3("((pl_i64)", v.t, ")");
+    case X_UN:
+        if (e->s[0] != '-' && e->s[0] != '+') return 0;
+        a = iexpr(e->a, w, 0);
+        if (!a || e->s[0] == '+') return a;
+        return cat3("pl_wsub((pl_i64)0, ", a, ")");
+    case X_BIN:
+        if (strcmp(e->s, "+") && strcmp(e->s, "-") &&
+            strcmp(e->s, "*") && strcmp(e->s, "**") &&
+            !(top && !strcmp(e->s, "/")))
+            return 0;
+        a = iexpr(e->a, w, 0);
+        if (!a) return 0;
+        if (!strcmp(e->s, "**")) {
+            if (e->b->k != X_NUM || e->b->fl || e->b->dv < 0 ||
+                e->b->dv > 64)
+                return 0;
+            return cat5("pl_wpow(", a, ", ", itoa_((long)e->b->dv), ")");
+        }
+        b = iexpr(e->b, w, 0);
+        if (!b) return 0;
+        return cat5(e->s[0] == '+' ? "pl_wadd(" : e->s[0] == '-' ?
+                    "pl_wsub(" : e->s[0] == '*' ? "pl_wmul(" :
+                    "pl_wdiv(", a, ", ", b, ")");
+    }
+    return 0;
+}
+
 static char *gbin(Node *e, int *k)
 {
     char *o = e->s;
@@ -4095,6 +4484,15 @@ static char *gbin(Node *e, int *k)
                     ", 1)");
     }
     if (iscmp_s(o)) {
+        int w = 0;
+        char *ia = iexpr(e->a, &w, 0), *ib = ia ? iexpr(e->b, &w, 0) : 0;
+        if (ia && ib && w) {
+            *k = K_N;
+            ge_q = -1;
+            ge_f = 0;
+            return cat5("(pl_wcmp(", ia, ", ", ib,
+                        cat3(") ", cmpop(o), " 0)"));
+        }
         a = ge(e->a, &ka);
         b = ge(e->b, &kb);
         *k = K_N;
@@ -4223,7 +4621,10 @@ static const char *bi_names[] = {
     "precision", "add", "multiply", "divide", "addr", "null", "date",
     "time", "oncode", "random", "allocation", "lineno", "low", "high",
     "left", "right", "center", "real", "unspec", "complex",
-    "conjg", "imag", 0
+    "conjg", "imag", "sind", "cosd", "tand", "asind", "acosd",
+    "atand", "asinh", "acosh", "atanh", "verifyr", "search",
+    "searchr", "tally", "rank", "byte", "maxlength", "ordinalname",
+    "ordinalpred", "ordinalsucc", 0
 };
 
 static int name_is_builtin(const char *n)
@@ -4263,7 +4664,10 @@ static const char *math1[][2] = {
     { "log10", "pl_log10" }, { "log2", "pl_log2" }, { "sin", "sin" },
     { "cos", "cos" }, { "tan", "tan" }, { "asin", "asin" },
     { "acos", "acos" }, { "sinh", "sinh" }, { "cosh", "cosh" },
-    { "tanh", "tanh" }, { 0, 0 }
+    { "tanh", "tanh" }, { "sind", "pl_sind" }, { "cosd", "pl_cosd" },
+    { "tand", "pl_tand" }, { "asind", "pl_asind" },
+    { "acosd", "pl_acosd" }, { "asinh", "pl_asinh" },
+    { "acosh", "pl_acosh" }, { "atanh", "pl_atanh" }, { 0, 0 }
 };
 
 static const char *int1[][2] = {
@@ -4280,7 +4684,7 @@ static int arrarg(Node *a, char **ptr, char **cnt, int *isl)
     s = lookup(a->s);
     if (!s || s->cls != C_VAR || !s->nd || a->a) return 0;
     v = rl(a);
-    if (!is_num(s) || s->star || s->isparam)
+    if (!is_num(s) || s->star || s->isparam || is_wide(s))
         perr(a->line, "numeric array expected", a->s);
     *isl = is_long(s);
     *ptr = cat3(*isl ? "(const long *)" : "(const double *)", v.t, "");
@@ -4367,6 +4771,14 @@ static char *gbuiltin(Node *e, int *k)
         ge_f = 6;
         return cat5("atan2(", a, ", ", b, ")");
     }
+    if (!strcmp(n, "atand")) {
+        need(e, 1, 2);
+        a = cnum(argn(e, 0));
+        ge_q = -1;
+        ge_f = 6;
+        if (nargs(e) == 1) return cat3("pl_atand(", a, ")");
+        return cat5("pl_atan2d(", a, ", ", cnum(argn(e, 1)), ")");
+    }
     if (!strcmp(n, "mod") || !strcmp(n, "rem")) {
         need(e, 2, 2);
         a = cnum(argn(e, 0));
@@ -4447,6 +4859,79 @@ static char *gbuiltin(Node *e, int *k)
         ge_q = 0;
         return cat5(n[0] == 'i' ? "pl_idx(" : "pl_ver(", a, ", ", b,
                     ")");
+    }
+    if (!strcmp(n, "verifyr") || !strcmp(n, "search") ||
+        !strcmp(n, "searchr") || !strcmp(n, "tally")) {
+        need(e, 2, 2);
+        a = cstr(argn(e, 0));
+        b = cstr(argn(e, 1));
+        ge_q = 0;
+        if (n[0] == 'v') return cat5("pl_verr(", a, ", ", b, ")");
+        if (n[0] == 't') return cat5("pl_tally(", a, ", ", b, ")");
+        return cat5("pl_srch(", a, ", ", b, n[6] ? ", 1)" : ", 0)");
+    }
+    if (!strcmp(n, "ordinalname") || !strcmp(n, "ordinalpred") ||
+        !strcmp(n, "ordinalsucc")) {
+        static char done[128];
+        LV v;
+        int oi = 0;
+        TypeDef *t;
+        int j;
+        need(e, 1, 1);
+        if (argn(e, 0)->k == X_NUM && argn(e, 0)->s) {
+            oi = find_type(argn(e, 0)->s) + 1;
+        } else if (argn(e, 0)->k == X_REF) {
+            v = rl(argn(e, 0));
+            oi = v.nu ? 0 : v.s->ord;
+        }
+        if (oi < 1) perr(e->line, "ORDINAL value expected in", n);
+        t = &types[oi - 1];
+        a = cnum(argn(e, 0));
+        if (!done[oi - 1]) {
+            Sb sn, sv;
+            memset(&sn, 0, sizeof sn);
+            memset(&sv, 0, sizeof sv);
+            for (j = 0; j < t->nord; j++) {
+                sb_s(&sn, cat3(j ? ", \"" : "\"", t->onm[j], "\""));
+                sb_s(&sv, cat2(j ? ", " : "", itoa_(t->ov[j])));
+            }
+            sb_s(&gdecl, cat5("static const char *ordn", itoa_(oi),
+                              "[] = { ", sb_str(&sn), " };\n"));
+            sb_s(&gdecl, cat5("static const long ordv", itoa_(oi),
+                              "[] = { ", sb_str(&sv), " };\n"));
+            done[oi - 1] = 1;
+        }
+        if (n[7] != 'n') {
+            ge_q = 0;
+            return cat5("pl_ostep(", a, ", ordv", itoa_(oi),
+                        cat5(", ", itoa_(t->nord),
+                             n[7] == 'p' ? ", -1)" : ", 1)", "", ""));
+        }
+        *k = K_S;
+        return cat5("pl_ordn(", a, cat3(", ordn", itoa_(oi), ", "),
+                    cat3("ordv", itoa_(oi), ", "),
+                    cat2(itoa_(t->nord), ")"));
+    }
+    if (!strcmp(n, "rank")) {
+        need(e, 1, 1);
+        ge_q = 0;
+        return cat3("pl_rank(", cstr(argn(e, 0)), ")");
+    }
+    if (!strcmp(n, "byte")) {
+        need(e, 1, 1);
+        *k = K_S;
+        return cat3("pl_byte(", cnum(argn(e, 0)), ")");
+    }
+    if (!strcmp(n, "maxlength")) {
+        LV v;
+        need(e, 1, 1);
+        if (argn(e, 0)->k != X_REF)
+            perr(e->line, "MAXLENGTH needs a string variable", 0);
+        v = rl(argn(e, 0));
+        if ((v.s->ty != TY_CHR && v.s->ty != TY_BIT) || v.s->len < 0)
+            perr(e->line, "MAXLENGTH needs a sized string", 0);
+        ge_q = 0;
+        return itoa_(v.s->len);
     }
     if (!strcmp(n, "substr")) {
         Node *s0 = argn(e, 0);
@@ -4679,6 +5164,11 @@ static char *numstore(Sym *s, const char *lv, const char *rv)
     }
     else if (s->ty == TY_FXD)
         sprintf(lim, "1e%d", s->p - s->q);
+    if (is_wide(s)) {
+        if (s->ty == TY_FXD) sprintf(lim, "1e%d", s->p);
+        return cat5(lv, " = pl_stw(", rv, cat3(", ", lim,
+                    size_chk ? ", 1)" : ", 0)"), ";");
+    }
     if (is_long(s)) {
         if (size_chk)
             return cat5(lv, " = pl_stl(", rv,
@@ -4760,6 +5250,16 @@ static char *rhs_val(Sym *s, Node *rhs)
 
 static void store_expr(Sym *s, char *lv, Node *rhs)
 {
+    if (is_wide(s)) {
+        int w = 0;
+        char *t = iexpr(rhs, &w, 1);
+        if (t) {
+            ln(cat5(lv, " = pl_wst(", t, cat3(", ",
+                    itoa_(s->ty == TY_FXB ? s->p : 63),
+                    size_chk ? ", 1);" : ", 0);"), ""));
+            return;
+        }
+    }
     store_one(s, lv, rhs_val(s, rhs));
 }
 
@@ -4874,7 +5374,8 @@ static void g_store(Node *tgt, Node *rhs)
                                  elems(r.s) != elems(s)))
                 perr(rhs->line, "array shapes differ", 0);
             if (is_str(s) != is_str(r.s) || (is_num(s) &&
-                (is_long(s) != is_long(r.s) || s->q != r.s->q)))
+                (is_long(s) != is_long(r.s) ||
+                 is_wide(s) != is_wide(r.s) || s->q != r.s->q)))
                 perr(rhs->line, "array types differ", 0);
             if (is_str(s) && (s->len != r.s->len ||
                               s->vary != r.s->vary))
@@ -4936,7 +5437,8 @@ static void forloop(Node *ctrl, Node *from, Node *to, Node *by,
         if (!is_num(cv.s) || cv.nu)
             perr(ctrl->line, "loop variable must be numeric", 0);
         cvt = cv.t;
-        cur_v = is_long(cv.s) ? cat3("((double)", cvt, ")") : cvt;
+        cur_v = is_long(cv.s) || is_wide(cv.s) ?
+                cat3("((double)", cvt, ")") : cvt;
         ln(numstore(cv.s, cvt, cnum(from)));
         if (to) {
             tb = newtemp("double");
@@ -5325,15 +5827,23 @@ static void g_alloc(Node *s, int fr)
     Node *it;
     Sym *y, *top;
     LV pv;
-    char *ptr;
+    char *ptr, *hp = 0;
     for (it = s->a; it; it = it->next) {
         y = lookup(it->s);
+        if (y && y->hs && !y->par && y->ty == TY_PTR) {
+            hp = y->cn;
+            y = y->hs;
+        } else {
+            hp = 0;
+        }
         if (!y || y->par || (y->stor != ST_BASED && y->stor != ST_CTL))
             perr(s->line, "ALLOCATE/FREE needs BASED or CONTROLLED:",
                  it->s);
         top = y;
         if (y->stor == ST_CTL) {
             ptr = y->hptr->cn;
+        } else if (hp) {
+            ptr = hp;
         } else if (it->a) {
             pv = rl(it->a);
             ptr = pv.t;
@@ -5528,6 +6038,18 @@ static void gs_one(Node *s)
     case S_SELECT: g_select(s); break;
     case S_STOP: ln("pl_stop(0);"); break;
     case S_NULL: break;
+    case S_ASSERT: {
+        Node *tx = s->b;
+        char *c = s->a ? cond(s->a) : "0";
+        if (!tx) {
+            tx = newnode(X_STR, s->line);
+            tx->s = "assertion";
+        }
+        if (s->fl == 1) c = cat3("!(", c, ")");
+        ln(cat5("pl_assert(", c, ", ", cstr(tx),
+                cat3(", ", itoa_(s->line % LINEMUL), ");")));
+        break;
+    }
     case S_DECL: break;
     case S_PUT: case S_GET: g_io(s); break;
     case S_OPEN: case S_CLOSE: case S_READ: case S_WRITE:
@@ -5623,8 +6145,11 @@ static void put_el(Sym *s, char *lv, void *arg)
     IoArg *ia = (IoArg *)arg;
     LV v;
     v.t = lv; v.s = s; v.nu = 0;
-    if (is_num(s)) {
-        char *val = is_long(s) ? cat3("(double)", lv, "") : lv;
+    if (is_wide(s) && ia->mode != 2 && ia->mode != 3) {
+        ln(cat5("pl_li_w(", ia->ft, ", ", lv, ");"));
+    } else if (is_num(s)) {
+        char *val = is_long(s) || is_wide(s) ?
+                    cat3("(double)", lv, "") : lv;
         int q = s->ty == TY_FLT ? -1 : s->q;
         int f = s->ty == TY_FLT ? s->p : 0;
         if (ia->mode == 2)
@@ -5654,8 +6179,8 @@ static void get_el(Sym *s, char *lv, void *arg)
     v.t = lv; v.s = s; v.nu = 0;
     if (is_num(s)) {
         char *d = newtemp("double");
-        ln(cat4(d, " = ", is_long(s) ? cat3("(double)", lv, "") : lv,
-                ";"));
+        ln(cat4(d, " = ", is_long(s) || is_wide(s) ?
+                cat3("(double)", lv, "") : lv, ";"));
         ln(cat5(ia->mode == 2 ? "pl_gn(" : "pl_gn_l(", ia->ft,
                 ", &", d, ");"));
         ln(numstore(s, lv, d));
@@ -5721,6 +6246,14 @@ static void do_item(Node *it, IoArg *ia)
         if (s && s->cls == C_VAR && s->nd && !e->a) {
             LV l = rl(e);
             forall(l.s, l.t, put_el, ia);
+            return;
+        }
+    }
+    if (ia->mode != 2 && ia->mode != 3) {
+        int w = 0;
+        char *iw = iexpr(e, &w, 1);
+        if (iw && w) {
+            ln(cat5("pl_li_w(", ia->ft, ", ", iw, ");"));
             return;
         }
     }
@@ -5999,6 +6532,7 @@ static int c_conv = 0;          /* parameters in the C convention */
 static const char *ptype(Sym *pm)
 {
     if (is_long(pm)) return "long ";
+    if (is_wide(pm)) return "pl_i64 ";
     if (pm->ty == TY_PTR) return "void *";
     if (pm->ty == TY_CPX) return "PC ";
     return "double ";
@@ -6047,8 +6581,8 @@ static char *param_decl(Sym *pm, Fn *f)
             el = pm->vary ? "struct { long n; char s[1]; }" : "char";
             if (pm->vary) perr(0, "VARYING array parameter", pm->name);
         } else {
-            el = is_long(pm) ? "long" : (pm->ty == TY_PTR ?
-                                         "void *" : "double");
+            el = is_long(pm) ? "long" : (is_wide(pm) ? "pl_i64" :
+                 (pm->ty == TY_PTR ? "void *" : "double"));
         }
         if (pm->star && c_conv && f)
             perr(0, "C-convention array needs explicit bounds:",

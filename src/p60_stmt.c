@@ -35,6 +35,11 @@ static char *numstore(Sym *s, const char *lv, const char *rv)
     }
     else if (s->ty == TY_FXD)
         sprintf(lim, "1e%d", s->p - s->q);
+    if (is_wide(s)) {
+        if (s->ty == TY_FXD) sprintf(lim, "1e%d", s->p);
+        return cat5(lv, " = pl_stw(", rv, cat3(", ", lim,
+                    size_chk ? ", 1)" : ", 0)"), ";");
+    }
     if (is_long(s)) {
         if (size_chk)
             return cat5(lv, " = pl_stl(", rv,
@@ -116,6 +121,16 @@ static char *rhs_val(Sym *s, Node *rhs)
 
 static void store_expr(Sym *s, char *lv, Node *rhs)
 {
+    if (is_wide(s)) {
+        int w = 0;
+        char *t = iexpr(rhs, &w, 1);
+        if (t) {
+            ln(cat5(lv, " = pl_wst(", t, cat3(", ",
+                    itoa_(s->ty == TY_FXB ? s->p : 63),
+                    size_chk ? ", 1);" : ", 0);"), ""));
+            return;
+        }
+    }
     store_one(s, lv, rhs_val(s, rhs));
 }
 
@@ -230,7 +245,8 @@ static void g_store(Node *tgt, Node *rhs)
                                  elems(r.s) != elems(s)))
                 perr(rhs->line, "array shapes differ", 0);
             if (is_str(s) != is_str(r.s) || (is_num(s) &&
-                (is_long(s) != is_long(r.s) || s->q != r.s->q)))
+                (is_long(s) != is_long(r.s) ||
+                 is_wide(s) != is_wide(r.s) || s->q != r.s->q)))
                 perr(rhs->line, "array types differ", 0);
             if (is_str(s) && (s->len != r.s->len ||
                               s->vary != r.s->vary))
@@ -292,7 +308,8 @@ static void forloop(Node *ctrl, Node *from, Node *to, Node *by,
         if (!is_num(cv.s) || cv.nu)
             perr(ctrl->line, "loop variable must be numeric", 0);
         cvt = cv.t;
-        cur_v = is_long(cv.s) ? cat3("((double)", cvt, ")") : cvt;
+        cur_v = is_long(cv.s) || is_wide(cv.s) ?
+                cat3("((double)", cvt, ")") : cvt;
         ln(numstore(cv.s, cvt, cnum(from)));
         if (to) {
             tb = newtemp("double");
@@ -681,15 +698,23 @@ static void g_alloc(Node *s, int fr)
     Node *it;
     Sym *y, *top;
     LV pv;
-    char *ptr;
+    char *ptr, *hp = 0;
     for (it = s->a; it; it = it->next) {
         y = lookup(it->s);
+        if (y && y->hs && !y->par && y->ty == TY_PTR) {
+            hp = y->cn;
+            y = y->hs;
+        } else {
+            hp = 0;
+        }
         if (!y || y->par || (y->stor != ST_BASED && y->stor != ST_CTL))
             perr(s->line, "ALLOCATE/FREE needs BASED or CONTROLLED:",
                  it->s);
         top = y;
         if (y->stor == ST_CTL) {
             ptr = y->hptr->cn;
+        } else if (hp) {
+            ptr = hp;
         } else if (it->a) {
             pv = rl(it->a);
             ptr = pv.t;
@@ -884,6 +909,18 @@ static void gs_one(Node *s)
     case S_SELECT: g_select(s); break;
     case S_STOP: ln("pl_stop(0);"); break;
     case S_NULL: break;
+    case S_ASSERT: {
+        Node *tx = s->b;
+        char *c = s->a ? cond(s->a) : "0";
+        if (!tx) {
+            tx = newnode(X_STR, s->line);
+            tx->s = "assertion";
+        }
+        if (s->fl == 1) c = cat3("!(", c, ")");
+        ln(cat5("pl_assert(", c, ", ", cstr(tx),
+                cat3(", ", itoa_(s->line % LINEMUL), ");")));
+        break;
+    }
     case S_DECL: break;
     case S_PUT: case S_GET: g_io(s); break;
     case S_OPEN: case S_CLOSE: case S_READ: case S_WRITE:

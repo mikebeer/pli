@@ -320,6 +320,105 @@ static double pl_fmul(double a, double b)
 static double pl_p10(int q);
 static double pl_fx(double x, int q);
 
+/* 64-bit integers for FIXED BIN(32..63) and FIXED DEC(10..18,0) */
+#ifdef _MSC_VER
+typedef __int64 pl_i64;
+#else
+__extension__ typedef long long pl_i64;
+#endif
+
+static pl_i64 pl_stw(double x, double lim, int chk)
+{
+    double a = x < 0.0 ? -x : x;
+    if (chk && a >= lim) pl_sig(PLC_SIZE, 0);
+    if (a >= 9.2e18) {
+        pl_sig(PLC_FOFL, 0);
+        return x < 0.0 ? -(pl_i64)9200000000000000000.0 :
+                         (pl_i64)9200000000000000000.0;
+    }
+    return (pl_i64)x;
+}
+
+static pl_i64 pl_w3(long a, long b, long c)
+{
+    return ((pl_i64)a * 1000000 + b) * 1000000 + c;
+}
+
+static pl_i64 pl_wadd(pl_i64 a, pl_i64 b)
+{
+    pl_i64 r = a + b;
+    if (((a ^ r) & (b ^ r)) < 0) pl_sig(PLC_FOFL, 0);
+    return r;
+}
+
+static pl_i64 pl_wsub(pl_i64 a, pl_i64 b)
+{
+    pl_i64 r = a - b;
+    if (((a ^ b) & (a ^ r)) < 0) pl_sig(PLC_FOFL, 0);
+    return r;
+}
+
+static pl_i64 pl_wmul(pl_i64 a, pl_i64 b)
+{
+    pl_i64 r;
+    if (a == 0 || b == 0) return 0;
+    r = a * b;
+    if (r / b != a || (a == -1 && b == r) || (b == -1 && a == r))
+        pl_sig(PLC_FOFL, 0);
+    return r;
+}
+
+static pl_i64 pl_wdiv(pl_i64 a, pl_i64 b)
+{
+    if (b == 0) {
+        pl_sig(PLC_ZDIV, 0);
+        return 0;
+    }
+    return a / b;
+}
+
+static pl_i64 pl_wmod(pl_i64 a, pl_i64 b)
+{
+    pl_i64 r;
+    if (b == 0) {
+        pl_sig(PLC_ZDIV, 0);
+        return 0;
+    }
+    r = a % b;
+    if (r != 0 && ((r < 0) != (b < 0))) r += b;
+    return r;
+}
+
+static pl_i64 pl_wpow(pl_i64 a, long n)
+{
+    pl_i64 r = 1;
+    while (n-- > 0) r = pl_wmul(r, a);
+    return r;
+}
+
+static int pl_wcmp(pl_i64 a, pl_i64 b)
+{
+    return a < b ? -1 : a > b;
+}
+
+/* store with the SIZE check against 2**bits */
+static pl_i64 pl_wst(pl_i64 v, int bits, int chk)
+{
+    pl_i64 lim;
+    if (chk && bits < 63) {
+        lim = (pl_i64)1 << bits;
+        if (v >= lim || v <= -lim) pl_sig(PLC_SIZE, 0);
+    }
+    return v;
+}
+
+static pl_i64 *pl_twp(double v)
+{
+    pl_i64 *p = (pl_i64 *)pl_ta((long)sizeof(pl_i64));
+    *p = (pl_i64)v;
+    return p;
+}
+
 static double pl_stf(double x, int q, double lim, int chk)
 {
     double v = pl_fx(x, q), a = v < 0.0 ? -v : v;
@@ -1015,6 +1114,103 @@ static PS pl_chrn(PS s, double w)
     return n >= s.n ? pl_just(s, w, 0) : pl_mk(s.p, n);
 }
 
+/* ---- Enterprise PL/I conveniences ---- */
+#define PL_RAD 0.017453292519943295
+static double pl_sind(double x) { return sin(x * PL_RAD); }
+static double pl_cosd(double x) { return cos(x * PL_RAD); }
+static double pl_tand(double x) { return tan(x * PL_RAD); }
+static double pl_asind(double x) { return asin(x) / PL_RAD; }
+static double pl_acosd(double x) { return acos(x) / PL_RAD; }
+static double pl_atand(double x) { return atan(x) / PL_RAD; }
+static double pl_atan2d(double y, double x)
+{
+    return atan2(y, x) / PL_RAD;
+}
+static double pl_asinh(double x)
+{
+    double a = x < 0 ? -x : x;
+    double r = log(a + sqrt(a * a + 1.0));
+    return x < 0 ? -r : r;
+}
+static double pl_acosh(double x) { return log(x + sqrt(x * x - 1.0)); }
+static double pl_atanh(double x) { return 0.5 * log((1.0 + x) / (1.0 - x)); }
+
+static double pl_verr(PS s, PS t)
+{
+    long i, j;
+    for (i = s.n - 1; i >= 0; i--) {
+        for (j = 0; j < t.n; j++) if (s.p[i] == t.p[j]) break;
+        if (j == t.n) return (double)(i + 1);
+    }
+    return 0.0;
+}
+
+static double pl_srch(PS s, PS t, int last)
+{
+    long i, j;
+    for (i = 0; i < s.n; i++) {
+        long k = last ? s.n - 1 - i : i;
+        for (j = 0; j < t.n; j++) if (s.p[k] == t.p[j]) return k + 1.0;
+    }
+    return 0.0;
+}
+
+static double pl_tally(PS s, PS t)
+{
+    long i, c = 0;
+    if (t.n < 1) return 0.0;
+    for (i = 0; i + t.n <= s.n; )
+        if (memcmp(s.p + i, t.p, (size_t)t.n) == 0) { c++; i += t.n; }
+        else i++;
+    return (double)c;
+}
+
+static double pl_rank(PS s)
+{
+    return s.n > 0 ? (double)(unsigned char)s.p[0] : 0.0;
+}
+
+static PS pl_byte(double n)
+{
+    char *p = (char *)pl_ta(2);
+    p[0] = (char)(long)n;
+    p[1] = 0;
+    return pl_mk(p, 1);
+}
+
+static PS pl_ordn(double v, const char **nm, const long *vl, int n)
+{
+    int i;
+    long x = pl_tol(v);
+    for (i = 0; i < n; i++)
+        if (vl[i] == x) return pl_mk((char *)nm[i], (long)strlen(nm[i]));
+    pl_sig(PLC_ERR, "ORDINALNAME of a value outside the ORDINAL");
+    return pl_mk((char *)"", 0);
+}
+
+static double pl_ostep(double v, const long *vl, int n, int d)
+{
+    int i;
+    long x = pl_tol(v);
+    for (i = 0; i < n; i++)
+        if (vl[i] == x) break;
+    i += d;
+    if (i < 0 || i >= n) {
+        pl_sig(PLC_ERR, "ORDINALPRED/ORDINALSUCC out of range");
+        return v;
+    }
+    return (double)vl[i];
+}
+
+static void pl_assert(int ok, PS txt, int line)
+{
+    if (ok) return;
+    fflush(stdout);
+    fprintf(stderr, "PLI: ASSERT failed at line %d: %.*s\n", line,
+            (int)txt.n, txt.p);
+    pl_sig(PLC_ERR, "ASSERT failed");
+}
+
 /* ---- record tables: KEYED and UPDATE record files ---- */
 static void pl_eofsig(PLF *f);
 
@@ -1411,6 +1607,28 @@ static void pl_li_c(PLF *f, PC z)
 static void pl_li_n(PLF *f, double x, int q, int fp)
 {
     pl_li(f, pl_n2s(x, q, fp));
+}
+
+static PS pl_i2s(pl_i64 v)
+{
+    char b[32], *p;
+    int n = 0, neg = v < 0, i;
+    if (v == 0) b[n++] = '0';
+    while (v != 0) {
+        int d = (int)(v % 10);
+        b[n++] = (char)('0' + (d < 0 ? -d : d));
+        v /= 10;
+    }
+    if (neg) b[n++] = '-';
+    p = (char *)pl_ta(n + 1);
+    for (i = 0; i < n; i++) p[i] = b[n - 1 - i];
+    p[n] = 0;
+    return pl_mk(p, n);
+}
+
+static void pl_li_w(PLF *f, pl_i64 v)
+{
+    pl_li(f, pl_i2s(v));
 }
 
 static void pl_pd_n(PLF *f, const char *nm, PS v, int str)
