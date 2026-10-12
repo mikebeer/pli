@@ -189,6 +189,17 @@ static void pl_sig(int c, const char *m)
 }
 
 /* ---- numbers ---- */
+/* some C libraries (Windows) print three exponent digits: use two */
+static void pl_fixexp(char *b)
+{
+    char *e = strchr(b, 'E');
+    if (!e) e = strchr(b, 'e');
+    if (!e || (e[1] != '+' && e[1] != '-')) return;
+    if (e[2] == '0' && e[3] >= '0' && e[3] <= '9' &&
+        e[4] >= '0' && e[4] <= '9')
+        memmove(e + 2, e + 3, strlen(e + 3) + 1);
+}
+
 static long pl_tol(double x)
 {
     if (x >= 2147483647.0) return 2147483647L;
@@ -493,11 +504,13 @@ static PS pl_n2s(double x, int q, int fp)
             memmove(b, b + 1, strlen(b));
     } else if (fp > 0) {
         sprintf(b, "%.*E", fp > 17 ? 16 : fp - 1, x);
+        pl_fixexp(b);
     } else if (x == floor(x) && x > -1e15 && x < 1e15) {
         sprintf(b, "%.0f", x);
         if (!strcmp(b, "-0")) strcpy(b, "0");
     } else {
         sprintf(b, "%.15g", x);
+        pl_fixexp(b);
     }
     return pl_keep(pl_ls(b));
 }
@@ -795,7 +808,12 @@ static void pl_open(PLF *f, const char *dd, const char *title,
             name = nm;
         }
     }
-    md = f->mode == PLF_IN ? "r" : (f->mode == PLF_OUT ? "w" : "r+");
+    if (f->rec)
+        md = f->mode == PLF_IN ? "rb" :
+             (f->mode == PLF_OUT ? "wb" : "r+b");
+    else
+        md = f->mode == PLF_IN ? "r" :
+             (f->mode == PLF_OUT ? "w" : "r+");
     f->fp = fopen(name, md);
     if (!f->fp) {
         fflush(stdout);
@@ -1044,6 +1062,7 @@ static void pl_en(PLF *f, double x)
     } else if (c == 'E') {
         if (b < 0) b = 5;
         sprintf(t, "%.*E", (int)(b > 40 ? 40 : b), x);
+        pl_fixexp(t);
         pl_padw(f, t, (long)strlen(t), a, 0);
     } else if (c == 'B') {
         PS s = pl_n2b(x, a < 0 ? 8 : a);

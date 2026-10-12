@@ -11,6 +11,13 @@ source lines are 71 columns or shorter.
 
 Options: `-o file`, `-m l,r` (source margins), `-s` (subscript checks).
 
+Windows (32 and 64 bit): `make win` cross-builds `pli-i686.exe` and
+`pli-x86_64.exe` with MinGW-w64; `tools/wintest.sh ARCH` runs the tests
+in Wine. Any Windows C compiler (MinGW, MSVC) compiles the output.
+Linux: any distribution with a C compiler (`make install`); `make dist`
+also builds a static x86_64 binary, an rpm and a deb. The spec file
+`pli.spec` builds from source on RPM distributions.
+
 For CMS, compile `pli_all.c` (made by `tools/amalg.sh`) and keep
 `plirt.h` on an accessed disk. The CMS build is not yet tested.
 

@@ -128,7 +128,6 @@ struct Fn {
 /* p10_util.c -- memory, errors, string builder */
 
 static char *progname = "pli";
-static int errcount = 0;
 
 static void die(const char *m)
 {
@@ -612,7 +611,6 @@ static void lexfile(const char *name)
 
 static int isop(const char *s) { return tisop(&TK, s); }
 static int isid(const char *s) { return tisid(&TK, s); }
-static int isid1(const char *s) { return tisid(&TK1, s); }
 static int isop1(const char *s) { return tisop(&TK1, s); }
 
 static void nxt(void)
@@ -1703,7 +1701,7 @@ static Node *p_program(void)
 /* p40_sem.c -- symbols, scopes, declarations and storage */
 
 static Scope *root = 0;
-static Sb gdecl, gproto, gfun, ginit;
+static Sb gdecl, gproto, gfun;
 static int idc = 0;
 static Fn *cur = 0;
 static Scope *csc = 0;
@@ -3356,9 +3354,10 @@ static void forloop(Node *ctrl, Node *from, Node *to, Node *by,
                     void *arg)
 {
     LV cv;
-    char *cvt = 0, *tb = 0, *ts = 0, *cur_v, *byc = 0;
+    char *cvt = 0, *tb = 0, *ts = 0, *cur_v = 0, *byc = 0;
     int dirk = 0;
     int d = ind;
+    cv.s = 0;
     if (ctrl) {
         cv = rl(ctrl);
         if (!is_num(cv.s) || cv.nu)

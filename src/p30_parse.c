@@ -6,7 +6,6 @@
 
 static int isop(const char *s) { return tisop(&TK, s); }
 static int isid(const char *s) { return tisid(&TK, s); }
-static int isid1(const char *s) { return tisid(&TK1, s); }
 static int isop1(const char *s) { return tisop(&TK1, s); }
 
 static void nxt(void)

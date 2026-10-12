@@ -3,3 +3,4 @@ pli
 docs/_toc.json
 docs/pages.json
 docs/*.pdf
+dist/

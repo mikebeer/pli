@@ -1,7 +1,6 @@
 /* p10_util.c -- memory, errors, string builder */
 
 static char *progname = "pli";
-static int errcount = 0;
 
 static void die(const char *m)
 {

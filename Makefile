@@ -25,5 +25,27 @@ lines:
 
 clean:
 	rm -f pli pli_all.c
+	rm -rf dist
 
-.PHONY: all test lines clean
+PREFIX  ?= /usr/local
+VERSION  = 1.0
+
+install: pli
+	mkdir -p $(DESTDIR)$(PREFIX)/bin $(DESTDIR)$(PREFIX)/share/pli
+	cp pli $(DESTDIR)$(PREFIX)/bin/
+	cp src/plirt.h $(DESTDIR)$(PREFIX)/share/pli/
+	cp -r examples $(DESTDIR)$(PREFIX)/share/pli/
+
+# Windows (needs MinGW-w64: i686-w64-mingw32-gcc, x86_64-w64-mingw32-gcc)
+win: pli_all.c
+	mkdir -p dist
+	i686-w64-mingw32-gcc -O2 -std=c89 -o dist/pli-i686.exe \
+	  pli_all.c -lm -static
+	x86_64-w64-mingw32-gcc -O2 -std=c89 -o dist/pli-x86_64.exe \
+	  pli_all.c -lm -static
+
+# release packages in dist/: Windows zips, Linux tar.gz, rpm, deb
+dist: all win
+	sh tools/package.sh $(VERSION)
+
+.PHONY: all test lines clean install win dist

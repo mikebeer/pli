@@ -120,6 +120,10 @@ add(
       ['`-s`', 'Check array subscripts at run time and raise SUBSCRIPTRANGE. The prefix `(SUBSCRIPTRANGE):` on a procedure does the same for that procedure alone.'],
     ]),
   P('The return code is 0 when the translation succeeded, 8 when an error was found in the source, and 4 for a usage error.'),
+  H2('Windows'),
+  P('The translator builds for Windows, 32 and 64 bit, with MinGW-w64: `make win` produces `pli-i686.exe` and `pli-x86_64.exe`, which are linked statically and need no DLL. Both pass the whole test suite under Wine. Translate with `pli prog.pli -o prog.c` and compile the C file with any Windows C compiler, for example `gcc -std=c89 -I. prog.c -o prog.exe -lm`, with `plirt.h` in the include path. The runtime prints floating-point exponents with two digits on every system, and record files are opened in binary mode.'),
+  H2('Linux packages'),
+  P('The source needs only a C compiler and builds on any Linux distribution; `make install` copies `pli` to `/usr/local/bin` and the runtime header and examples to `/usr/local/share/pli`. `make dist` builds, besides the Windows zip files, a statically linked x86_64 binary, a tar file, an rpm and a deb. The rpm and deb contain the static binary, so they do not depend on the version of the C library. The file `pli.spec` builds an rpm from source on RPM-based distributions. Compile generated programs with `cc -I/usr/share/pli prog.c -lm`. The packages were built on Ubuntu; only the deb was unpacked and run here, and no other distribution was tested.'),
   H2('Building on VM/370 CMS'),
   P('On VM/370plus the C compiler is GCC, started by the exec `GCC31` (or `GCC`), which writes assembler code that `ASMAHL` assembles. The translator is built from the single file `pli_all.c`, and the generated programs are built the same way. The steps are:'),
   OL(

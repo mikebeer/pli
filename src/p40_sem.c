@@ -1,7 +1,7 @@
 /* p40_sem.c -- symbols, scopes, declarations and storage */
 
 static Scope *root = 0;
-static Sb gdecl, gproto, gfun, ginit;
+static Sb gdecl, gproto, gfun;
 static int idc = 0;
 static Fn *cur = 0;
 static Scope *csc = 0;

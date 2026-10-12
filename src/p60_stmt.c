@@ -200,9 +200,10 @@ static void forloop(Node *ctrl, Node *from, Node *to, Node *by,
                     void *arg)
 {
     LV cv;
-    char *cvt = 0, *tb = 0, *ts = 0, *cur_v, *byc = 0;
+    char *cvt = 0, *tb = 0, *ts = 0, *cur_v = 0, *byc = 0;
     int dirk = 0;
     int d = ind;
+    cv.s = 0;
     if (ctrl) {
         cv = rl(ctrl);
         if (!is_num(cv.s) || cv.nu)
