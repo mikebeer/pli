@@ -121,6 +121,7 @@ struct Fn {
     int rec, id, depth, ison;
     int jb;             /* needs setjmp */
     int ext;            /* exported (module mode) */
+    int hason;          /* sets ON-units: save and restore them */
     Sym *ps;            /* procedure symbol */
     Node *node;
     Fn *par;

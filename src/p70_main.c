@@ -168,6 +168,11 @@ static void gen_fn(Fn *f)
         if (first) sb_s(&hdr, "void");
         sb_c(&hdr, ')');
         sb_s(&gproto, cat2(sb_str(&hdr), ";\n"));
+        f->hason = has_on(n->b);
+        if (f->hason) {
+            sb_s(&f->decl, "    PLH h_;\n");
+            sb_s(&pro, "    pl_hsave(&h_);\n");
+        }
         for (pm = ps->params; pm; pm = pm->params) {
             if (pm->pcn)
                 sb_s(&pro, cat5("    ", pm->cn, " = *", pm->pcn,
@@ -194,6 +199,8 @@ static void gen_fn(Fn *f)
             sb_s(&pro, sb_str(&f->body));
             f->body = save;
         }
+        if (f->hason && ps->ty == TY_VOID)
+            sb_s(&ep, "    pl_hrest(&h_);\n");
         for (pm = ps->params; pm; pm = pm->params)
             if (pm->pcn)
                 sb_s(&ep, cat5("    *", pm->pcn, " = ", pm->cn,

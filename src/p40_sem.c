@@ -189,6 +189,19 @@ static long elems(Sym *s)
     return n;
 }
 
+/* number of elements as C text (run-time for a CONTROLLED array) */
+static char *elem_text(Sym *s)
+{
+    char *t;
+    int i;
+    long m = 1;
+    if (!s->lbv) return itoa_(elems(s));
+    t = cat5("(", s->hbv, " - ", s->lbv, " + 1)");
+    for (i = 1; i < s->nd; i++) m *= s->hi[i] - s->lo[i] + 1;
+    if (m != 1) t = cat3(t, " * ", itoa_(m));
+    return t;
+}
+
 static void set_default_type(Sym *s)
 {
     char c = s->name[0];
@@ -297,7 +310,8 @@ static char *dimtext(Sym *s)
     char t[40];
     memset(&b, 0, sizeof b);
     for (i = 0; i < s->nd; i++) {
-        sprintf(t, "[%ld]", s->hi[i] - s->lo[i] + 1);
+        sprintf(t, "[%ld]", (i == 0 && s->stor == ST_CTL) ? 1L :
+                s->hi[i] - s->lo[i] + 1);
         sb_s(&b, t);
     }
     return xdup(sb_str(&b));
@@ -394,6 +408,12 @@ static void emit_storage(Sym *s)
         s->hptr = newsym(0, s->name, C_VAR);
         s->hptr->cn = cat2(s->cn, "_p");
         sb_s(&gdecl, cat3("static void *", s->hptr->cn, ";\n"));
+        if (s->nd) {
+            s->lbv = cat2(s->cn, "_lb");
+            s->hbv = cat2(s->cn, "_hb");
+            sb_s(&gdecl, cat5("static long ", s->lbv, ", ", s->hbv,
+                              ";\n"));
+        }
         return;
     }
     line = cat4(s->tn, " ", s->cn, ";\n");

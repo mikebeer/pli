@@ -60,8 +60,12 @@ static void forall(Sym *s, char *base, elemfn fn, void *arg)
     char buf[200];
     for (i = 0; i < s->nd; i++) {
         iv[i] = newtemp("long");
-        sprintf(buf, "for (%s = 0; %s < %ld; %s++) {", iv[i], iv[i],
-                s->hi[i] - s->lo[i] + 1, iv[i]);
+        if (i == 0 && s->lbv)
+            sprintf(buf, "for (%s = 0; %s < %s - %s + 1; %s++) {",
+                    iv[i], iv[i], s->hbv, s->lbv, iv[i]);
+        else
+            sprintf(buf, "for (%s = 0; %s < %ld; %s++) {", iv[i],
+                    iv[i], s->hi[i] - s->lo[i] + 1, iv[i]);
         ln(buf);
         ind++;
         t = cat4(t, "[", iv[i], "]");
@@ -161,7 +165,8 @@ static void g_store(Node *tgt, Node *rhs)
         if (rhs->k == X_REF && !rhs->c && lookup(rhs->s) &&
             lookup(rhs->s)->nd && !rhs->a) {
             LV r = rl(rhs);
-            if (r.nu != v.nu || elems(r.s) != elems(s))
+            if (r.nu != v.nu || (!r.s->lbv && !s->lbv &&
+                                 elems(r.s) != elems(s)))
                 perr(rhs->line, "array shapes differ", 0);
             if (is_str(s) != is_str(r.s) || (is_num(s) &&
                 (is_long(s) != is_long(r.s) || s->q != r.s->q)))
@@ -395,6 +400,21 @@ static void g_select(Node *s)
     ln("}");
 }
 
+/* does a statement list (not counting nested procedures and the
+   bodies of ON-units) establish or revert an ON-unit? */
+static int has_on(Node *n)
+{
+    for (; n; n = n->next) {
+        if (n->k == S_ON || n->k == S_REVERT) return 1;
+        if (n->k == S_PROC) continue;
+        if (has_on(n->a) || has_on(n->b) || has_on(n->c) ||
+            has_on(n->d) || has_on(n->e)) return 1;
+    }
+    return 0;
+}
+
+static char *rettype(Sym *p);
+
 static void g_return(Node *s)
 {
     Sym *p = cur->ps;
@@ -428,12 +448,19 @@ static void g_return(Node *s)
         for (pm = p->params; pm; pm = pm->params)
             if (pm->pcn && (is_num(pm) || pm->ty == TY_PTR) && !pm->nd)
                 ln(cat5("*", pm->pcn, " = ", pm->cn, ";"));
+        if (cur->hason) {
+            char *rt = newtemp(rettype(p));
+            ln(cat4(rt, " = ", v, ";"));
+            ln("pl_hrest(&h_);");
+            v = rt;
+        }
         ln(cat3("return ", v, ";"));
         return;
     }
     for (pm = p->params; pm; pm = pm->params)
         if (pm->pcn && (is_num(pm) || pm->ty == TY_PTR) && !pm->nd)
             ln(cat5("*", pm->pcn, " = ", pm->cn, ";"));
+    if (cur->hason) ln("pl_hrest(&h_);");
     ln("return;");
 }
 
@@ -566,6 +593,8 @@ static void gen_fill(Sym *s, char *t)
     else fill_elem(s, t);
 }
 
+static void gen_init(Sym *s, char *t);
+
 static void g_alloc(Node *s, int fr)
 {
     Node *it;
@@ -589,6 +618,47 @@ static void g_alloc(Node *s, int fr)
         } else {
             perr(s->line, "no pointer for", it->s);
             ptr = "";
+        }
+        if (y->stor == ST_CTL) {
+            if (fr) {
+                if (y->nd)
+                    ln(cat5("pl_cfree(&", ptr, ", &", y->lbv,
+                            cat3(", &", y->hbv, ");")));
+                else
+                    ln(cat3("pl_cfree(&", ptr,
+                            ", &pl_dlb, &pl_dhb);"));
+                continue;
+            }
+            if (y->nd) {
+                char *lo, *hi;
+                Node *bd = it->b;
+                if (bd && bd->fl)
+                    perr(s->line, "ALLOCATE bounds cannot be *", 0);
+                if (bd) {
+                    lo = bd->a ? cnum(bd->a) : "1";
+                    hi = cnum(bd->b);
+                } else if (y->star) {
+                    perr(s->line, "ALLOCATE needs bounds for", it->s);
+                    lo = hi = "0";
+                } else {
+                    lo = itoa_(y->lo[0]);
+                    hi = itoa_(y->hi[0]);
+                }
+                ln(cat5("pl_calloc(&", ptr, ", &", y->lbv,
+                        cat5(", &", y->hbv, ", (long)(", lo,
+                        cat5("), (long)(", hi, "), sizeof(", top->tn,
+                             "));"))));
+                gen_fill(top, cat5("(*(", top->tn, " *)(", ptr, "))"));
+            } else {
+                ln(cat4("pl_calloc(&", ptr,
+                        ", &pl_dlb, &pl_dhb, 0, 0, ",
+                        cat3("sizeof(", top->tn, "));")));
+                gen_fill(top, cat5("(*(", top->tn, " *)(", ptr, "))"));
+                if (top->init || top->ty == TY_STRUCT)
+                    gen_init(top, cat5("(*(", top->tn, " *)(", ptr,
+                                       "))"));
+            }
+            continue;
         }
         if (fr) {
             ln(cat3("pl_free(", ptr, ");"));

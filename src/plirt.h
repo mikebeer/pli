@@ -182,9 +182,35 @@ static void pl_on(int c, void (*h)(void))
     pl_hd[c] = h;
 }
 
+static void pl_reg(PLF *f);
+
 static void pl_onf(PLF *f, void (*h)(void))
 {
+    pl_reg(f);
     f->eof = h;
+}
+
+/* ON-units are restored when the procedure that set them returns */
+typedef struct {
+    void (*hd[PLC_N])(void);
+    void (*eof[64])(void);
+    int nf;
+} PLH;
+
+static void pl_hsave(PLH *h)
+{
+    int i;
+    for (i = 0; i < PLC_N; i++) h->hd[i] = pl_hd[i];
+    h->nf = pl_nfl;
+    for (i = 0; i < pl_nfl; i++) h->eof[i] = pl_fl[i]->eof;
+}
+
+static void pl_hrest(PLH *h)
+{
+    int i;
+    for (i = 0; i < PLC_N; i++) pl_hd[i] = h->hd[i];
+    for (i = 0; i < pl_nfl; i++)
+        pl_fl[i]->eof = i < h->nf ? h->eof[i] : 0;
 }
 
 static void pl_fin(void)
@@ -1821,6 +1847,52 @@ static void *pl_alloc(long n)
 static void pl_free(void *p)
 {
     free(p);
+}
+
+/* CONTROLLED storage: a stack of generations.  Each block starts
+   with a header that holds the previous generation. */
+typedef struct { void *prev; long lb, hb; } PLGH;
+#define PL_GH 32
+static long pl_dlb, pl_dhb;
+
+static void pl_calloc(void **pp, long *lb, long *hb, long nlb,
+                      long nhb, long unit)
+{
+    long n = nhb - nlb + 1;
+    char *b;
+    PLGH *h;
+    if (n < 1) n = 1;
+    b = (char *)pl_mem(n * unit + PL_GH);
+    h = (PLGH *)b;
+    h->prev = *pp;
+    h->lb = *lb;
+    h->hb = *hb;
+    *pp = b + PL_GH;
+    *lb = nlb;
+    *hb = nhb;
+}
+
+static void pl_cfree(void **pp, long *lb, long *hb)
+{
+    char *b;
+    PLGH *h;
+    if (!*pp) return;
+    b = (char *)*pp - PL_GH;
+    h = (PLGH *)b;
+    *pp = h->prev;
+    *lb = h->lb;
+    *hb = h->hb;
+    free(b);
+}
+
+static long pl_gens(void *p)
+{
+    long n = 0;
+    while (p) {
+        n++;
+        p = ((PLGH *)((char *)p - PL_GH))->prev;
+    }
+    return n;
 }
 
 #endif

@@ -1091,6 +1091,7 @@ static Node *p_stmt(void)
                     l->s = expid();
                     l->a = pn;
                 }
+                if (!fr && isop("(")) l->b = p_dims();
                 if (!fr && isid("set")) {
                     nxt(); expop("("); l->a = p_ref(); expop(")");
                 }

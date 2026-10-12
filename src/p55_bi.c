@@ -71,7 +71,7 @@ static int arrarg(Node *a, char **ptr, char **cnt, int *isl)
         perr(a->line, "numeric array expected", a->s);
     *isl = is_long(s);
     *ptr = cat3(*isl ? "(const long *)" : "(const double *)", v.t, "");
-    *cnt = itoa_(elems(s));
+    *cnt = elem_text(s);
     return 1;
 }
 
@@ -363,7 +363,7 @@ static char *gbuiltin(Node *e, int *k)
         if (!s || s->stor != ST_CTL)
             perr(e->line, "CONTROLLED variable expected", 0);
         ge_q = 0;
-        return cat3("((double)(", s->hptr->cn, " != 0))");
+        return cat3("((double)pl_gens(", s->hptr->cn, "))");
     }
     if (!strcmp(n, "lineno")) {
         need(e, 1, 1);
