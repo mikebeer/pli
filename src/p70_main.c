@@ -534,6 +534,7 @@ static void usage(void)
     fprintf(stderr,
         "usage: pli [-c|-C] [-M] [-o out] [-m l,r] [-s] src ...\n");
     fprintf(stderr, "  -o f    output file (- for stdout)\n");
+    fprintf(stderr, "  -Dn[=v] define preprocessor variable n\n");
     fprintf(stderr, "  -c      build the program (needs a C\n");
     fprintf(stderr, "          compiler); -o names the exe;\n");
     fprintf(stderr, "          .c and .o files given are linked\n");
@@ -664,6 +665,9 @@ int main(int argc, char **argv)
         else if (!strcmp(argv[i], "-m") && i + 1 < argc) {
             margs = argv[++i];
             if (sscanf(margs, "%d,%d", &lmar, &rmar) != 2) usage();
+        } else if (argv[i][0] == '-' && argv[i][1] == 'D' &&
+                   argv[i][2]) {
+            pp_define(argv[i] + 2);
         } else if (argv[i][0] == '-' && argv[i][1]) usage();
         else if (is_pli(argv[i])) {
             if (npf >= MAXSRC - 1) usage();

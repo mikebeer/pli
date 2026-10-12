@@ -1,0 +1,46 @@
+/* the preprocessor */
+pp: procedure options(main);
+%declare (n, i) fixed;
+%declare name char;
+%n = 3;
+%name = 'total';
+%activate n, name, i;
+%replace limit by 10;
+
+%square: procedure (x) returns (fixed);
+   %return (x * x);
+%end square;
+%activate square;
+
+%greet: procedure (w) returns (char);
+   %return ('put skip list (''hello ' || w || ''');');
+%end greet;
+%activate greet;
+
+%if n = 3 %then %do;
+   dcl name fixed bin(31) init(square(n));
+%end;
+%else %do;
+   dcl name fixed bin(31) init(0);
+%end;
+
+%dcl k fixed;
+%activate k;
+dcl a(5) fixed bin(31) init(10, 20, 30, 40, 50);
+put skip list ('total', name);
+put skip list ('limit', limit);
+%do i = 1 to 3;
+   put skip list ('i is', i);
+%end;
+%k = 0;
+%do while (k < 3);
+   %k = k + 1;
+%end;
+put skip list ('k', k);
+greet('world')
+%if length('abc') = 3 & substr('hello', 2, 3) = 'ell' %then
+   put skip list ('bif ok');
+%if index('abcdef', 'cd') = 3 %then put skip list ('index ok');
+%if n = 4 %then put skip list ('wrong');
+%else put skip list ('else ok');
+end pp;

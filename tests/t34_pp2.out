@@ -1,0 +1,9 @@
+x                       121
+mode                    mode
+fast branch
+j                       10
+j                       6
+j                       2
+mod ok
+minmax
+upper

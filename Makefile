@@ -2,7 +2,8 @@
 CC      ?= cc
 CFLAGS  ?= -O2 -std=c89 -pedantic -Wall -Wextra
 LIBS    = -lm
-PARTS   = src/p00_defs.h src/p10_util.c src/p20_lex.c src/p30_parse.c \
+PARTS   = src/p00_defs.h src/p10_util.c src/p20_lex.c src/p22_pp.c \
+         src/p30_parse.c \
           src/p40_sem.c src/p50_expr.c src/p55_bi.c src/p60_stmt.c \
           src/p65_io.c src/p70_main.c
 
