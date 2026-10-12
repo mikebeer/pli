@@ -2,6 +2,15 @@
 
 static int c_conv = 0;          /* parameters in the C convention */
 
+/* C type of a by-reference scalar parameter's local copy */
+static const char *ptype(Sym *pm)
+{
+    if (is_long(pm)) return "long ";
+    if (pm->ty == TY_PTR) return "void *";
+    if (pm->ty == TY_CPX) return "PC ";
+    return "double ";
+}
+
 static char *rettype(Sym *p)
 {
     if (p->copt) return (char *)ctype_of(p);
@@ -9,6 +18,7 @@ static char *rettype(Sym *p)
     case TY_FXB: case TY_FXD: case TY_FLT: return "double";
     case TY_CHR: case TY_BIT: return "PS";
     case TY_PTR: return "void *";
+    case TY_CPX: return "PC";
     }
     return "void";
 }
@@ -20,6 +30,8 @@ static char *param_decl(Sym *pm, Fn *f)
     int i;
     Sb b;
     pm->isparam = 1;
+    if (pm->ty == TY_CPX && (pm->nd || c_conv))
+        perr(0, "COMPLEX array or C parameter unsupported:", pm->name);
     if (pm->ty == TY_FILE) {
         pm->cn = nm;
         return cat2("PLF *", nm);
@@ -88,12 +100,10 @@ static char *param_decl(Sym *pm, Fn *f)
         if (f) {
             pm->cpar = cp;
             if (f->rec)
-                sb_s(&f->decl, cat5("    ", is_long(pm) ? "long " :
-                     (pm->ty == TY_PTR ? "void *" : "double "),
+                sb_s(&f->decl, cat5("    ", ptype(pm),
                      pm->cn, ";", "\n"));
             else
-                sb_s(&gdecl, cat5("static ", is_long(pm) ? "long " :
-                     (pm->ty == TY_PTR ? "void *" : "double "),
+                sb_s(&gdecl, cat5("static ", ptype(pm),
                      pm->cn, ";", "\n"));
         }
         return cat3(ctype_of(pm), " ", cp);
@@ -103,15 +113,12 @@ static char *param_decl(Sym *pm, Fn *f)
     if (!f) {
         /* prototype only */
     } else if (f->rec)
-        sb_s(&f->decl, cat5("    ", is_long(pm) ? "long " :
-             (pm->ty == TY_PTR ? "void *" : "double "), pm->cn, ";",
+        sb_s(&f->decl, cat5("    ", ptype(pm), pm->cn, ";",
              "\n"));
     else
-        sb_s(&gdecl, cat5("static ", is_long(pm) ? "long " :
-             (pm->ty == TY_PTR ? "void *" : "double "), pm->cn, ";",
+        sb_s(&gdecl, cat5("static ", ptype(pm), pm->cn, ";",
              "\n"));
-    return cat3(is_long(pm) ? "long *" : (pm->ty == TY_PTR ?
-                "void **" : "double *"), "", nm);
+    return cat3(ptype(pm), "*", nm);
 }
 
 /* extern prototype of an ENTRY that is declared in this module and

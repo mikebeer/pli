@@ -28,6 +28,7 @@ typedef struct {
     char *s;
     double dv;
     int fl;             /* STR: 1 bit, NUM: 1 float */
+    int im;             /* NUM: imaginary constant (3.5I) */
     int q;              /* NUM: decimals / mantissa digits */
     int line;
     char *file;
@@ -53,7 +54,7 @@ struct Attr {
     int p, q;
     int len, vary;
     int stor;           /* ST_* */
-    int ext, isent, isfile, rec, prt, mode, keyed;
+    int ext, isent, isfile, rec, prt, mode, keyed, cpx;
     Node *based, *init;
     char *like;
     Attr *ret;
@@ -61,13 +62,16 @@ struct Attr {
     int copt, hasdsc;   /* OPTIONS(C); ENTRY has a parameter list */
     Attr *dsc, *dnext;  /* ENTRY parameter descriptions */
     Node *dims;         /* bounds of a described parameter */
+    char *pic;          /* PICTURE string */
+    char *defbase;      /* DEFINED base variable */
+    Node *defpos;       /* POSITION of a DEFINED string */
 };
 
 struct Node {
     int k, line;
     char *s;
     double dv;
-    int n, fl;
+    int n, fl, im;
     Node *a, *b, *c, *d, *e;
     Node *next;
     Node *lab;
@@ -78,7 +82,7 @@ struct Node {
 };
 
 enum { TY_NONE, TY_FXB, TY_FXD, TY_FLT, TY_CHR, TY_BIT, TY_PTR,
-       TY_FILE, TY_ENT, TY_LBL, TY_STRUCT, TY_VOID };
+       TY_FILE, TY_ENT, TY_LBL, TY_STRUCT, TY_VOID, TY_CPX, TY_AREA };
 enum { ST_NONE, ST_AUTO, ST_STAT, ST_BASED, ST_CTL, ST_PARAM };
 enum { C_VAR, C_PROC, C_BUILTIN, C_LABEL };
 
@@ -108,6 +112,10 @@ struct Sym {
     int protodone;      /* prototype written */
     int hasdsc;         /* ENTRY with a parameter list */
     char *cpar;         /* C parameter of an OPTIONS(C) procedure */
+    char *pic;          /* expanded PICTURE */
+    int picnum;         /* numeric picture */
+    char *defbase;      /* DEFINED base variable */
+    long defpos;        /* POSITION of a DEFINED string, 1 up */
 };
 
 struct Scope {
@@ -374,6 +382,10 @@ static void lexnum(TV *v, const char **pp, int line)
         val = strtod(b, &e);
     }
     memset(&t, 0, sizeof t);
+    if ((*p == 'i' || *p == 'I') && !idch(p[1])) {
+        t.im = 1;
+        p++;
+    }
     t.k = T_NUM;
     t.s = xdup(b);
     t.dv = val;
@@ -750,6 +762,7 @@ static Node *p_prim(void)
         n = newnode(X_NUM, TK.line);
         n->dv = TK.dv;
         n->fl = TK.fl;
+        n->im = TK.im;
         n->n = TK.q;
         nxt();
         return n;
@@ -1062,6 +1075,17 @@ static void p_attrs(Attr *a)
             nxt(); a->vary = 1;
         } else if (!strcmp(k, "pointer") || !strcmp(k, "ptr")) {
             nxt(); a->ty = TY_PTR;
+        } else if (!strcmp(k, "offset")) {
+            nxt(); a->ty = TY_PTR; skipparens();
+        } else if (!strcmp(k, "area")) {
+            nxt();
+            a->ty = TY_AREA;
+            a->len = 1000;
+            if (isop("(")) {
+                nxt();
+                a->len = (int)cval(p_expr());
+                expop(")");
+            }
         } else if (!strcmp(k, "file")) {
             nxt(); a->ty = TY_FILE; a->isfile = 1;
         } else if (!strcmp(k, "label")) {
@@ -1104,6 +1128,20 @@ static void p_attrs(Attr *a)
             if (isid("call"))
                 perr(TK.line, "INITIAL CALL unsupported", 0);
             a->init = p_initlist();
+        } else if (!strcmp(k, "complex") || !strcmp(k, "cplx")) {
+            nxt(); a->cpx = 1;
+        } else if (!strcmp(k, "picture") || !strcmp(k, "pic")) {
+            nxt();
+            if (TK.k != T_STR)
+                perr(TK.line, "picture string expected", 0);
+            a->pic = TK.s;
+            nxt();
+        } else if (!strcmp(k, "defined") || !strcmp(k, "def")) {
+            nxt();
+            if (isop("(")) { nxt(); a->defbase = expid(); expop(")"); }
+            else a->defbase = expid();
+        } else if (!strcmp(k, "position") || !strcmp(k, "pos")) {
+            nxt(); expop("("); a->defpos = p_expr(); expop(")");
         } else if (!strcmp(k, "like")) {
             nxt(); a->like = expid();
         } else if (!strcmp(k, "stream") || !strcmp(k, "sequential") ||
@@ -1736,8 +1774,13 @@ static Node *p_stmt(void)
                     l->a = pn;
                 }
                 if (!fr && isop("(")) l->b = p_dims();
-                if (!fr && isid("set")) {
-                    nxt(); expop("("); l->a = p_ref(); expop(")");
+                while (isid("set") || isid("in")) {
+                    int isin = isid("in");
+                    nxt(); expop("(");
+                    if (isin) l->c = p_ref();
+                    else if (!fr) l->a = p_ref();
+                    else perr(TK.line, "SET not allowed in FREE", 0);
+                    expop(")");
                 }
                 if (t) t->next = l; else n->a = l;
                 t = l;
@@ -2026,15 +2069,61 @@ static void set_default_type(Sym *s)
     }
 }
 
+/* upper case, with repetition factors (3)9 written out */
+static char *pic_expand(const char *p)
+{
+    Sb b;
+    memset(&b, 0, sizeof b);
+    while (*p) {
+        if (*p == '(' && isdigit((unsigned char)p[1])) {
+            int n = atoi(p + 1);
+            while (*p && *p != ')') p++;
+            if (*p) p++;
+            if (*p) {
+                char c = (char)toupper((unsigned char)*p++);
+                while (n-- > 0) sb_c(&b, c);
+            }
+            continue;
+        }
+        sb_c(&b, (char)toupper((unsigned char)*p++));
+    }
+    return xdup(sb_str(&b));
+}
+
+static int pic_width(const char *p)
+{
+    int n = 0;
+    for (; *p; p++) {
+        if (*p == 'V') continue;
+        if ((p[0] == 'C' && p[1] == 'R') ||
+            (p[0] == 'D' && p[1] == 'B')) {
+            p++;
+            n++;
+        }
+        n++;
+    }
+    return n;
+}
+
 static void apply_type(Sym *s, Attr *a)
 {
     s->ext = a->ext;
+    if (a->pic) {
+        s->pic = pic_expand(a->pic);
+        s->picnum = strpbrk(s->pic, "AX") == 0;
+        s->ty = TY_CHR;
+        s->vary = 0;
+        s->len = pic_width(s->pic);
+        if (s->len < 1) perr(0, "empty picture for", s->name);
+        return;
+    }
     if (a->ty == TY_CHR || a->ty == TY_BIT) {
         s->ty = a->ty;
         s->len = a->len == -2 ? 1 : a->len;
         s->vary = a->vary;
     } else if (a->ty) {
         s->ty = a->ty;
+        if (a->ty == TY_AREA) s->len = a->len;
     } else if (a->fix || a->base) {
         int fix = a->fix, base = a->base;
         if (!fix) fix = 2;
@@ -2060,8 +2149,12 @@ static void apply_type(Sym *s, Attr *a)
             if (base == 1) s->p = (s->p * 3 + 9) / 10;
             if (s->p < 1) s->p = 1;
         }
+        if (a->cpx) s->ty = TY_CPX;
     } else if (a->isent) {
         s->ty = TY_ENT;
+    } else if (a->cpx) {
+        s->ty = TY_CPX;
+        s->p = 6;
     }
 }
 
@@ -2072,6 +2165,7 @@ static void copy_kids(Sym *dst, Sym *src, Scope *sc)
         n = newsym(sc, k->name, C_VAR);
         n->ty = k->ty; n->p = k->p; n->q = k->q;
         n->len = k->len; n->vary = k->vary;
+        n->pic = k->pic; n->picnum = k->picnum;
         n->nd = k->nd; n->star = k->star;
         memcpy(n->lo, k->lo, sizeof n->lo);
         memcpy(n->hi, k->hi, sizeof n->hi);
@@ -2156,6 +2250,10 @@ static char *base_text(Sym *s)
     case TY_FXB: return is_long(s) ? "long" : "double";
     case TY_FXD: return is_long(s) ? "long" : "double";
     case TY_FLT: return "double";
+    case TY_CPX: return "PC";
+    case TY_AREA:
+        return cat3("struct { long used; long pad; char d[",
+                    itoa_((long)s->len), "]; }");
     case TY_PTR: return "void *";
     case TY_FILE: return "PLF";
     case TY_STRUCT:
@@ -2213,6 +2311,29 @@ static void emit_storage(Sym *s)
         return;
     }
     sb_s(&gdecl, cat4("typedef ", decl_text(s, s->tn), ";", "\n"));
+    if (s->defbase) {
+        Sym *b = lookupc(s->sc ? s->sc : csc, s->defbase,
+                         C_VAR);
+        char *at;
+        if (!b || b->cls != C_VAR || !b->cn || b->stor == ST_BASED ||
+            b->stor == ST_CTL || b->isparam || b->ty == TY_FILE)
+            perr(0, "bad DEFINED base for", s->name);
+        if (b->defbase)
+            perr(0, "DEFINED on a DEFINED variable:", s->name);
+        if (is_str(s)) {
+            if (!is_str(b) || b->vary || s->vary || s->nd ||
+                b->nd || s->defpos < 1 ||
+                s->defpos - 1 + s->len != b->len)
+                perr(0, "DEFINED string must end where its base "
+                     "ends:", s->name);
+            at = cat3("((char *)&", b->cn, cat3(" + ",
+                      itoa_(s->defpos - 1), ")"));
+        } else {
+            at = cat2("&", b->cn);
+        }
+        s->cn = cat5("(*(", s->tn, " *)", at, ")");
+        return;
+    }
     if (s->stor == ST_BASED) return;
     if (s->stor == ST_CTL) {
         s->hptr = newsym(0, s->name, C_VAR);
@@ -2248,6 +2369,8 @@ static void setup_sym(Sym *s, Node *it, Scope *sc)
     s->frec = a->rec;
     s->fmode = a->mode;
     s->fkeyed = a->keyed;
+    s->defbase = a->defbase;
+    s->defpos = a->defpos ? (long)cval(a->defpos) : 1;
     if (it->b) set_dims(s, it->b);
     if (a->like) {
         Sym *l = lookupc(sc, a->like, C_VAR);
@@ -2320,7 +2443,13 @@ static void finish_sym(Sym *s)
     }
     if (s->cls != C_VAR) return;
     if (!s->ty) set_default_type(s);
-    if (s->ty == TY_ENT || s->ty == TY_LBL) return;
+    if (s->ty == TY_ENT) return;
+    if (s->ty == TY_LBL) {
+        s->cn = mkcn("v", s->id, s->name);
+        s->tn = "long";
+        sb_s(&gdecl, cat3("static long ", s->cn, ";\n"));
+        return;
+    }
     emit_storage(s);
 }
 
@@ -2513,7 +2642,7 @@ static void scan_stmts(Scope *sc, Node *s, Fn *fn)
 
 /* p50_expr.c -- expression translation */
 
-enum { K_N = 1, K_S, K_B, K_P, K_V };
+enum { K_N = 1, K_S, K_B, K_P, K_V, K_C };
 
 static int ge_q = -1, ge_f = 0, uses_tmp = 0;
 static int subs_chk = 0;
@@ -2574,10 +2703,35 @@ static char *conv_num(char *t, int k, int line)
     return t;
 }
 
+static char *pvtxt(LV v);
+
+/* the numeric value of a numeric PICTURE variable, or 0 */
+static char *picnum_val(Node *e)
+{
+    Sym *s;
+    LV v;
+    if (e->k != X_REF || e->c || !(s = lookup(e->s)) ||
+        s->cls != C_VAR || !s->picnum)
+        return 0;
+    v = rl(e);
+    if (v.nu) return 0;
+    return cat5("pl_picval(", clit(s->pic, (long)strlen(s->pic)),
+                ", pl_ps(", pvtxt(v), "))");
+}
+
 static char *cnum(Node *e)
 {
     int k, q, f;
-    char *t = ge(e, &k);
+    char *t = picnum_val(e);
+    if (t) {
+        const char *pp = strpbrk(lookup(e->s)->pic, ".V");
+        long nf = 0;
+        for (; pp && *pp; pp++) if (strchr("9Z*", *pp)) nf++;
+        ge_q = (int)nf;
+        ge_f = 0;
+        return t;
+    }
+    t = ge(e, &k);
     q = ge_q;
     f = ge_f;
     t = conv_num(t, k, e->line);
@@ -2800,6 +2954,9 @@ static char *ref_value(Node *e, int *k)
     case TY_PTR:
         *k = K_P;
         return v.t;
+    case TY_CPX:
+        *k = K_C;
+        return v.t;
     }
     perr(e->line, "cannot use in an expression:", s->name);
     return "";
@@ -2810,6 +2967,54 @@ static char *ref_value(Node *e, int *k)
 static int same_store(Sym *a, Sym *b)
 {
     return a->ty == b->ty && is_long(a) == is_long(b);
+}
+
+/* built-in functions whose result is COMPLEX */
+static int cpx_fn(const char *n, Node *a0)
+{
+    if (!strcmp(n, "complex") || !strcmp(n, "conjg")) return 1;
+    if (!a0) return 0;
+    return (!strcmp(n, "sqrt") || !strcmp(n, "exp") ||
+            !strcmp(n, "log") || !strcmp(n, "sin") ||
+            !strcmp(n, "cos"));
+}
+
+static int cpx_node(Node *e)
+{
+    Sym *s;
+    const char *o;
+    if (!e) return 0;
+    switch (e->k) {
+    case X_NUM:
+        return e->im;
+    case X_UN:
+        return e->s[0] != '!' && cpx_node(e->a);
+    case X_BIN:
+        o = e->s;
+        if (strcmp(o, "+") && strcmp(o, "-") && strcmp(o, "*") &&
+            strcmp(o, "/") && strcmp(o, "**")) return 0;
+        return cpx_node(e->a) || cpx_node(e->b);
+    case X_REF:
+        s = e->c ? 0 : lookup(e->s);
+        if (s && s->cls == C_VAR) return s->ty == TY_CPX;
+        if (s && s->cls == C_PROC) return s->ty == TY_CPX;
+        if (!s && !e->c && name_is_builtin(e->s))
+            return cpx_fn(e->s, e->a) &&
+                   (e->s[0] == 'c' || cpx_node(e->a));
+        return 0;
+    }
+    return 0;
+}
+
+static char *ccx(Node *e)
+{
+    int k;
+    char *t;
+    if (cpx_node(e)) {
+        t = ge(e, &k);
+        return t;
+    }
+    return cat3("pl_cx(", cnum(e), ", 0.0)");
 }
 
 static char *gfile(Node *f);
@@ -2850,6 +3055,11 @@ static char *argp(Sym *pm, Node *a)
         if (x && x->ty == TY_PTR && !v.nu) return cat2("&", v.t);
         uses_tmp = 1;
         return cat3("pl_tpp(", cptr(a), ")");
+    }
+    if (pm->ty == TY_CPX) {
+        if (x && x->ty == TY_CPX && !v.nu) return cat2("&", v.t);
+        uses_tmp = 1;
+        return cat3("pl_tcp(", ccx(a), ")");
     }
     if (is_num(pm)) {
         if (x && is_num(x) && !v.nu && same_store(x, pm) &&
@@ -2931,6 +3141,7 @@ static char *gcall(Sym *p, Node *e, int *k)
     case TY_CHR: *k = K_S; uses_tmp = 1; break;
     case TY_BIT: *k = K_B; uses_tmp = 1; break;
     case TY_PTR: *k = K_P; break;
+    case TY_CPX: *k = K_C; break;
     default: *k = K_V; break;
     }
     if (p->copt && p->ty == TY_CHR)
@@ -2961,6 +3172,24 @@ static char *gbin(Node *e, int *k)
     char *o = e->s;
     char *a, *b;
     int ka, kb, q1, q2, f1, f2;
+    if ((e->a && cpx_node(e->a)) || (e->b && cpx_node(e->b))) {
+        a = ccx(e->a);
+        b = ccx(e->b);
+        ge_q = -1;
+        ge_f = 0;
+        if (!strcmp(o, "=") || !strcmp(o, "!=") || !strcmp(o, "^=")) {
+            *k = K_N;
+            return cat5(o[0] == '=' ? "(" : "(!", "pl_ceq(", a, ", ",
+                        cat2(b, "))"));
+        }
+        *k = K_C;
+        if (!strcmp(o, "+")) return cat5("pl_cadd(", a, ", ", b, ")");
+        if (!strcmp(o, "-")) return cat5("pl_csub(", a, ", ", b, ")");
+        if (!strcmp(o, "*")) return cat5("pl_cmul(", a, ", ", b, ")");
+        if (!strcmp(o, "/")) return cat5("pl_cdiv(", a, ", ", b, ")");
+        if (!strcmp(o, "**")) return cat5("pl_cpow(", a, ", ", b, ")");
+        perr(e->line, "operator not allowed on COMPLEX values", o);
+    }
     if (!strcmp(o, "||")) {
         a = ge(e->a, &ka);
         b = ge(e->b, &kb);
@@ -3003,8 +3232,10 @@ static char *gbin(Node *e, int *k)
             return cat5("(", a, o[0] == '=' ? " == " : " != ", b, ")");
         }
         if (ka == K_N || kb == K_N) {
-            a = conv_num(a, ka, e->line);
-            b = conv_num(b, kb, e->line);
+            char *pv = picnum_val(e->a);
+            a = pv ? pv : conv_num(a, ka, e->line);
+            pv = picnum_val(e->b);
+            b = pv ? pv : conv_num(b, kb, e->line);
             return cat5("(", a, cat3(" ", cmpop(o), " "), b, ")");
         }
         uses_tmp = 1;
@@ -3044,6 +3275,12 @@ static char *ge(Node *e, int *k)
     int ka;
     switch (e->k) {
     case X_NUM:
+        if (e->im) {
+            *k = K_C;
+            ge_q = -1;
+            ge_f = 0;
+            return cat3("pl_cx(0.0, ", dtoa_(e->dv), ")");
+        }
         *k = K_N;
         ge_q = e->fl ? -1 : e->n;
         ge_f = e->fl ? (e->n > 0 ? e->n : 1) : 0;
@@ -3068,6 +3305,13 @@ static char *ge(Node *e, int *k)
                 return cat3("pl_bnot(", a, ")");
             }
             perr(e->line, "bad operand for NOT", 0);
+        }
+        if (cpx_node(e->a)) {
+            *k = K_C;
+            ge_q = -1;
+            ge_f = 0;
+            a = ccx(e->a);
+            return e->s[0] == '-' ? cat3("pl_cneg(", a, ")") : a;
         }
         a = cnum(e->a);
         *k = K_N;
@@ -3104,7 +3348,8 @@ static const char *bi_names[] = {
     "string", "char", "bit", "fixed", "float", "binary", "decimal",
     "precision", "add", "multiply", "divide", "addr", "null", "date",
     "time", "oncode", "random", "allocation", "lineno", "low", "high",
-    "left", "right", "center", "real", 0
+    "left", "right", "center", "real", "unspec", "complex",
+    "conjg", "imag", 0
 };
 
 static int name_is_builtin(const char *n)
@@ -3187,6 +3432,33 @@ static char *gbuiltin(Node *e, int *k)
     *k = K_N;
     ge_q = -1;
     ge_f = 0;
+    if (!strcmp(n, "complex")) {
+        need(e, 2, 2);
+        *k = K_C;
+        return cat5("pl_cx(", cnum(argn(e, 0)), ", ",
+                    cnum(argn(e, 1)), ")");
+    }
+    if (!strcmp(n, "conjg")) {
+        need(e, 1, 1);
+        *k = K_C;
+        return cat3("pl_cconj(", ccx(argn(e, 0)), ")");
+    }
+    if (!strcmp(n, "imag")) {
+        need(e, 1, 1);
+        return cat3("pl_cim(", ccx(argn(e, 0)), ")");
+    }
+    if (nargs(e) == 1 && cpx_node(argn(e, 0))) {
+        a = ccx(argn(e, 0));
+        if (!strcmp(n, "real")) return cat3("pl_cre(", a, ")");
+        if (!strcmp(n, "abs")) return cat3("pl_cabs(", a, ")");
+        *k = K_C;
+        if (!strcmp(n, "sqrt")) return cat3("pl_csqrt(", a, ")");
+        if (!strcmp(n, "exp")) return cat3("pl_cexp(", a, ")");
+        if (!strcmp(n, "log")) return cat3("pl_clog(", a, ")");
+        if (!strcmp(n, "sin")) return cat3("pl_csin(", a, ")");
+        if (!strcmp(n, "cos")) return cat3("pl_ccos(", a, ")");
+        perr(e->line, "COMPLEX argument not allowed for", n);
+    }
     if (!strcmp(n, "abs")) {
         need(e, 1, 1);
         a = cnum(argn(e, 0));
@@ -3371,6 +3643,28 @@ static char *gbuiltin(Node *e, int *k)
         a = cstr(argn(e, 0));
         if (nargs(e) == 1) return a;
         return cat5("pl_chrn(", a, ", ", cnum(argn(e, 1)), ")");
+    }
+    if (!strcmp(n, "unspec")) {
+        LV v;
+        Sym *s;
+        need(e, 1, 1);
+        if (argn(e, 0)->k != X_REF)
+            perr(e->line, "UNSPEC needs a variable", 0);
+        v = rl(argn(e, 0));
+        s = v.s;
+        if (v.nu || s->ty == TY_STRUCT)
+            perr(e->line, "UNSPEC of an aggregate unsupported", 0);
+        *k = K_B;
+        uses_tmp = 1;
+        if (s->ty == TY_FXB && s->p <= 31)
+            return cat3("pl_ubits((unsigned long)(", v.t,
+                        s->p <= 15 ? "), 16)" : "), 32)");
+        if (s->ty == TY_FLT) return cat3("pl_ubits_d(", v.t, ")");
+        if (s->ty == TY_CHR)
+            return cat3("pl_ubits_s(pl_ps(", pvtxt(v), "))");
+        if (s->ty == TY_BIT) return cat3("pl_ps(", pvtxt(v), ")");
+        perr(e->line, "UNSPEC of this type unsupported", s->name);
+        return "";
     }
     if (!strcmp(n, "bit")) {
         need(e, 1, 2);
@@ -3560,11 +3854,16 @@ static void store_one(Sym *s, char *lv, char *val)
 {
     LV v;
     if (is_num(s)) ln(numstore(s, lv, val));
-    else if (is_str(s)) {
+    else if (s->picnum) {
+        v.t = lv; v.s = s; v.nu = 0;
+        ln(cat5("pl_picfmt(", pvtxt(v), ", ",
+                clit(s->pic, (long)strlen(s->pic)),
+                cat3(", ", val, ");")));
+    } else if (is_str(s)) {
         v.t = lv; v.s = s; v.nu = 0;
         ln(cat5(s->ty == TY_BIT ? "pl_ab(" : "pl_as(", pvtxt(v), ", ",
                 val, ");"));
-    } else if (s->ty == TY_PTR) {
+    } else if (s->ty == TY_PTR || s->ty == TY_CPX) {
         ln(cat4(lv, " = ", val, ";"));
     }
 }
@@ -3576,10 +3875,11 @@ static void store_el(Sym *s, char *lv, void *arg)
 
 static char *rhs_val(Sym *s, Node *rhs)
 {
-    if (is_num(s)) return cnum(rhs);
+    if (is_num(s) || s->picnum) return cnum(rhs);
     if (s->ty == TY_BIT) return cbit(rhs);
     if (s->ty == TY_CHR) return cstr(rhs);
     if (s->ty == TY_PTR) return cptr(rhs);
+    if (s->ty == TY_CPX) return ccx(rhs);
     perr(rhs->line, "cannot assign to", s->name);
     return "";
 }
@@ -3592,7 +3892,7 @@ static void store_expr(Sym *s, char *lv, Node *rhs)
 static int is_pseudo(Node *t)
 {
     return t->k == X_REF && !t->c && !t->b && !lookup(t->s) &&
-           !strcmp(t->s, "substr");
+           (!strcmp(t->s, "substr") || !strcmp(t->s, "unspec"));
 }
 
 static void g_store(Node *tgt, Node *rhs)
@@ -3602,6 +3902,29 @@ static void g_store(Node *tgt, Node *rhs)
     StoreArg sa;
     char *val, *tmp;
     if (tgt->k != X_REF) perr(tgt->line, "bad assignment target", 0);
+    if (is_pseudo(tgt) && !strcmp(tgt->s, "unspec")) {
+        LV uv;
+        Sym *us;
+        if (!tgt->a || tgt->a->k != X_REF || tgt->a->next)
+            perr(tgt->line, "bad UNSPEC target", 0);
+        uv = rl(tgt->a);
+        us = uv.s;
+        if (uv.nu || us->ty == TY_STRUCT)
+            perr(tgt->line, "UNSPEC of an aggregate unsupported", 0);
+        if (us->ty == TY_FXB && us->p <= 31)
+            ln(cat5(uv.t, " = pl_unsx(pl_unbits(", cbit(rhs),
+                    us->p <= 15 ? ", 16), 16);" : ", 32), 32);", ""));
+        else if (us->ty == TY_FLT)
+            ln(cat5(uv.t, " = pl_unbits_d(", cbit(rhs), ");", ""));
+        else if (us->ty == TY_CHR)
+            ln(cat5("pl_as(", pvtxt(uv), ", pl_unbits_s(", cbit(rhs),
+                    "));"));
+        else if (us->ty == TY_BIT)
+            ln(cat5("pl_ab(", pvtxt(uv), ", ", cbit(rhs), ");"));
+        else
+            perr(tgt->line, "UNSPEC of this type unsupported", 0);
+        return;
+    }
     if (is_pseudo(tgt)) {
         LV sv;
         Node *a0 = tgt->a, *a1, *a2;
@@ -3625,6 +3948,38 @@ static void g_store(Node *tgt, Node *rhs)
     }
     v = rl(tgt);
     s = v.s;
+    if (s->ty == TY_AREA) {
+        LV r;
+        if (v.nu) perr(tgt->line, "array of areas unsupported", 0);
+        if (rhs->k == X_REF && !rhs->c && !rhs->a &&
+            !strcmp(rhs->s, "empty") && !lookup(rhs->s)) {
+            ln(cat2(v.t, ".used = 0;"));
+            return;
+        }
+        if (rhs->k != X_REF) perr(rhs->line, "AREA expected", 0);
+        r = rl(rhs);
+        if (r.s->ty != TY_AREA || r.nu)
+            perr(rhs->line, "AREA expected", 0);
+        ln(cat5("memcpy(&", v.t, ", &", r.t,
+                cat3(", sizeof ", v.t, ");")));
+        return;
+    }
+    if (s->ty == TY_LBL) {
+        Sym *lc, *lv2;
+        if (v.nu || rhs->k != X_REF || rhs->c || rhs->a)
+            perr(rhs->line, "label expected", 0);
+        lv2 = lookup(rhs->s);
+        if (lv2 && lv2->ty == TY_LBL) {
+            ln(cat4(v.t, " = ", lv2->cn, ";"));
+            return;
+        }
+        lc = lookupc(csc, rhs->s, C_LABEL);
+        if (!lc) perr(rhs->line, "undefined label", rhs->s);
+        if (lc->owner != cur)
+            perr(rhs->line, "label of another procedure:", rhs->s);
+        ln(cat4(v.t, " = ", itoa_((long)lc->id), ";"));
+        return;
+    }
     if (s->ty == TY_STRUCT && !v.nu) {
         LV r;
         if (rhs->k != X_REF) perr(rhs->line, "structure expected", 0);
@@ -3655,8 +4010,9 @@ static void g_store(Node *tgt, Node *rhs)
             return;
         }
         val = rhs_val(s, rhs);
-        tmp = newtemp(is_num(s) ? "double" : (s->ty == TY_PTR ?
-                      "void *" : "PS"));
+        tmp = newtemp(is_num(s) || s->picnum ? "double" :
+                      (s->ty == TY_PTR ? "void *" :
+                      (s->ty == TY_CPX ? "PC" : "PS")));
         ln(cat4(tmp, " = ", val, ";"));
         sa.val = tmp;
         forall(s, v.t, store_el, &sa);
@@ -3907,7 +4263,9 @@ static void g_return(Node *s)
         perr(s->line, "RETURN needs a value in function", p->name);
     }
     if (p->ty != TY_VOID) {
-        if (is_num(p)) {
+        if (p->ty == TY_CPX) {
+            v = ccx(s->a);
+        } else if (is_num(p)) {
             char *t = newtemp("double");
             v = cnum(s->a);
             if (is_long(p)) v = cat3("(double)pl_tol(", v, ")");
@@ -3922,7 +4280,8 @@ static void g_return(Node *s)
             v = cptr(s->a);
         }
         for (pm = p->params; pm; pm = pm->params)
-            if (pm->pcn && (is_num(pm) || pm->ty == TY_PTR) && !pm->nd)
+            if (pm->pcn && (is_num(pm) || pm->ty == TY_PTR ||
+                            pm->ty == TY_CPX) && !pm->nd)
                 ln(cat5("*", pm->pcn, " = ", pm->cn, ";"));
         if (cur->hason) {
             char *rt = newtemp(rettype(p));
@@ -3934,7 +4293,8 @@ static void g_return(Node *s)
         return;
     }
     for (pm = p->params; pm; pm = pm->params)
-        if (pm->pcn && (is_num(pm) || pm->ty == TY_PTR) && !pm->nd)
+        if (pm->pcn && (is_num(pm) || pm->ty == TY_PTR ||
+                            pm->ty == TY_CPX) && !pm->nd)
             ln(cat5("*", pm->pcn, " = ", pm->cn, ";"));
     if (cur->hason) ln("pl_hrest(&h_);");
     ln("return;");
@@ -3943,8 +4303,22 @@ static void g_return(Node *s)
 static void g_goto(Node *s)
 {
     Sym *l = lookupc(csc, s->s, C_LABEL);
+    Sym *vs = lookup(s->s);
     Fn *o;
     int i;
+    if (vs && vs->ty == TY_LBL) {
+        Scope *sc;
+        Sym *y;
+        ln(cat3("switch (", vs->cn, ") {"));
+        for (sc = csc; sc; sc = sc->par)
+            for (y = sc->syms; y; y = y->link)
+                if (y->cls == C_LABEL && y->owner == cur)
+                    ln(cat5("case ", itoa_((long)y->id), ": goto ",
+                            y->cn, ";"));
+        ln("default: pl_die(\"GOTO with an unset label\");");
+        ln("}");
+        return;
+    }
     if (!l) perr(s->line, "undefined label", s->s);
     o = l->owner;
     if (o == cur) {
@@ -3998,6 +4372,7 @@ static int condid(Node *s, char **fl)
         return 8;
     if (!strcmp(n, "finish")) return 9;
     if (!strcmp(n, "key")) return 10;
+    if (!strcmp(n, "area")) return 14;
     if (!strcmp(n, "transmit")) return 11;
     if (!strcmp(n, "endpage")) return 12;
     perr(s->line, "condition not supported:", n);
@@ -4136,6 +4511,23 @@ static void g_alloc(Node *s, int fr)
             }
             continue;
         }
+        if (it->c) {
+            LV av = rl(it->c);
+            if (av.s->ty != TY_AREA || av.nu)
+                perr(s->line, "IN needs an AREA variable", 0);
+            if (fr) {
+                ln(cat3("pl_afree(", ptr, ");"));
+                ln(cat2(ptr, " = 0;"));
+            } else {
+                ln(cat5(ptr, " = pl_aalloc(&", av.t, ".used, ",
+                        cat5(av.t, ".d, (long)sizeof ", av.t,
+                             ".d, sizeof(", cat2(top->tn, "));"))));
+                ln(cat3("if (", ptr, ") {"));
+                gen_fill(top, cat5("(*(", top->tn, " *)(", ptr, "))"));
+                ln("}");
+            }
+            continue;
+        }
         if (fr) {
             ln(cat3("pl_free(", ptr, ");"));
             ln(cat2(ptr, " = 0;"));
@@ -4199,7 +4591,8 @@ static void scope_inits(Scope *sc)
     for (y = sc->syms; y && n < 512; y = y->link) a[n++] = y;
     for (i = n - 1; i >= 0; i--) {
         y = a[i];
-        if (y->cls != C_VAR || y->par || y->isparam) continue;
+        if (y->cls != C_VAR || y->par || y->isparam || y->defbase)
+            continue;
         if (y->stor == ST_STAT || y->stor == ST_BASED ||
             y->stor == ST_CTL) continue;
         if (y->ty == TY_FILE || !y->cn) continue;
@@ -4365,6 +4758,13 @@ static void put_el(Sym *s, char *lv, void *arg)
         else
             ln(cat5("pl_li_n(", ia->ft, ", ", val, cat5(", ",
                     itoa_(q), ", ", itoa_(f), ");")));
+    } else if (s->ty == TY_CPX) {
+        if (ia->mode == 2) {
+            ln(cat5("pl_en(", ia->ft, ", ", lv, ".r);"));
+            ln(cat5("pl_en(", ia->ft, ", ", lv, ".i);"));
+        } else {
+            ln(cat5("pl_li_c(", ia->ft, ", ", lv, ");"));
+        }
     } else if (is_str(s)) {
         ln(cat5(ia->mode == 2 ? "pl_es(" : "pl_li(", ia->ft, ", ",
                 cat3("pl_ps(", pvtxt(v), ")"), ");"));
@@ -4385,6 +4785,15 @@ static void get_el(Sym *s, char *lv, void *arg)
         ln(cat5(ia->mode == 2 ? "pl_gn(" : "pl_gn_l(", ia->ft,
                 ", &", d, ");"));
         ln(numstore(s, lv, d));
+    } else if (s->ty == TY_CPX) {
+        if (ia->mode == 2) {
+            char *d1 = newtemp("double"), *d2 = newtemp("double");
+            ln(cat5("pl_gn(", ia->ft, ", &", d1, ");"));
+            ln(cat5("pl_gn(", ia->ft, ", &", d2, ");"));
+            ln(cat5(lv, " = pl_cx(", d1, ", ", cat2(d2, ");")));
+        } else {
+            ln(cat5("pl_gc_l(", ia->ft, ", &", lv, ");"));
+        }
     } else if (is_str(s)) {
         ln(cat5(ia->mode == 2 ? "pl_gs(" : "pl_gs_l(", ia->ft, ", ",
                 pvtxt(v), cat3(", ", s->ty == TY_BIT ? "1" : "0",
@@ -4453,6 +4862,15 @@ static void do_item(Node *it, IoArg *ia)
             else
                 ln(cat5("pl_li_n(", ia->ft, ", ", v, cat5(", ",
                         itoa_(q), ", ", itoa_(f), ");")));
+        } else if (k == K_C) {
+            if (ia->mode == 2) {
+                char *ct = newtemp("PC");
+                ln(cat4(ct, " = ", v, ";"));
+                ln(cat5("pl_en(", ia->ft, ", ", ct, ".r);"));
+                ln(cat5("pl_en(", ia->ft, ", ", ct, ".i);"));
+            } else {
+                ln(cat5("pl_li_c(", ia->ft, ", ", v, ");"));
+            }
         } else if (k == K_S || k == K_B) {
             ln(cat5(ia->mode == 2 ? "pl_es(" : "pl_li(", ia->ft, ", ",
                     v, ");"));
@@ -4703,6 +5121,15 @@ static void g_file(Node *s)
 
 static int c_conv = 0;          /* parameters in the C convention */
 
+/* C type of a by-reference scalar parameter's local copy */
+static const char *ptype(Sym *pm)
+{
+    if (is_long(pm)) return "long ";
+    if (pm->ty == TY_PTR) return "void *";
+    if (pm->ty == TY_CPX) return "PC ";
+    return "double ";
+}
+
 static char *rettype(Sym *p)
 {
     if (p->copt) return (char *)ctype_of(p);
@@ -4710,6 +5137,7 @@ static char *rettype(Sym *p)
     case TY_FXB: case TY_FXD: case TY_FLT: return "double";
     case TY_CHR: case TY_BIT: return "PS";
     case TY_PTR: return "void *";
+    case TY_CPX: return "PC";
     }
     return "void";
 }
@@ -4721,6 +5149,8 @@ static char *param_decl(Sym *pm, Fn *f)
     int i;
     Sb b;
     pm->isparam = 1;
+    if (pm->ty == TY_CPX && (pm->nd || c_conv))
+        perr(0, "COMPLEX array or C parameter unsupported:", pm->name);
     if (pm->ty == TY_FILE) {
         pm->cn = nm;
         return cat2("PLF *", nm);
@@ -4789,12 +5219,10 @@ static char *param_decl(Sym *pm, Fn *f)
         if (f) {
             pm->cpar = cp;
             if (f->rec)
-                sb_s(&f->decl, cat5("    ", is_long(pm) ? "long " :
-                     (pm->ty == TY_PTR ? "void *" : "double "),
+                sb_s(&f->decl, cat5("    ", ptype(pm),
                      pm->cn, ";", "\n"));
             else
-                sb_s(&gdecl, cat5("static ", is_long(pm) ? "long " :
-                     (pm->ty == TY_PTR ? "void *" : "double "),
+                sb_s(&gdecl, cat5("static ", ptype(pm),
                      pm->cn, ";", "\n"));
         }
         return cat3(ctype_of(pm), " ", cp);
@@ -4804,15 +5232,12 @@ static char *param_decl(Sym *pm, Fn *f)
     if (!f) {
         /* prototype only */
     } else if (f->rec)
-        sb_s(&f->decl, cat5("    ", is_long(pm) ? "long " :
-             (pm->ty == TY_PTR ? "void *" : "double "), pm->cn, ";",
+        sb_s(&f->decl, cat5("    ", ptype(pm), pm->cn, ";",
              "\n"));
     else
-        sb_s(&gdecl, cat5("static ", is_long(pm) ? "long " :
-             (pm->ty == TY_PTR ? "void *" : "double "), pm->cn, ";",
+        sb_s(&gdecl, cat5("static ", ptype(pm), pm->cn, ";",
              "\n"));
-    return cat3(is_long(pm) ? "long *" : (pm->ty == TY_PTR ?
-                "void **" : "double *"), "", nm);
+    return cat3(ptype(pm), "*", nm);
 }
 
 /* extern prototype of an ENTRY that is declared in this module and

@@ -84,11 +84,16 @@ static void store_one(Sym *s, char *lv, char *val)
 {
     LV v;
     if (is_num(s)) ln(numstore(s, lv, val));
-    else if (is_str(s)) {
+    else if (s->picnum) {
+        v.t = lv; v.s = s; v.nu = 0;
+        ln(cat5("pl_picfmt(", pvtxt(v), ", ",
+                clit(s->pic, (long)strlen(s->pic)),
+                cat3(", ", val, ");")));
+    } else if (is_str(s)) {
         v.t = lv; v.s = s; v.nu = 0;
         ln(cat5(s->ty == TY_BIT ? "pl_ab(" : "pl_as(", pvtxt(v), ", ",
                 val, ");"));
-    } else if (s->ty == TY_PTR) {
+    } else if (s->ty == TY_PTR || s->ty == TY_CPX) {
         ln(cat4(lv, " = ", val, ";"));
     }
 }
@@ -100,10 +105,11 @@ static void store_el(Sym *s, char *lv, void *arg)
 
 static char *rhs_val(Sym *s, Node *rhs)
 {
-    if (is_num(s)) return cnum(rhs);
+    if (is_num(s) || s->picnum) return cnum(rhs);
     if (s->ty == TY_BIT) return cbit(rhs);
     if (s->ty == TY_CHR) return cstr(rhs);
     if (s->ty == TY_PTR) return cptr(rhs);
+    if (s->ty == TY_CPX) return ccx(rhs);
     perr(rhs->line, "cannot assign to", s->name);
     return "";
 }
@@ -116,7 +122,7 @@ static void store_expr(Sym *s, char *lv, Node *rhs)
 static int is_pseudo(Node *t)
 {
     return t->k == X_REF && !t->c && !t->b && !lookup(t->s) &&
-           !strcmp(t->s, "substr");
+           (!strcmp(t->s, "substr") || !strcmp(t->s, "unspec"));
 }
 
 static void g_store(Node *tgt, Node *rhs)
@@ -126,6 +132,29 @@ static void g_store(Node *tgt, Node *rhs)
     StoreArg sa;
     char *val, *tmp;
     if (tgt->k != X_REF) perr(tgt->line, "bad assignment target", 0);
+    if (is_pseudo(tgt) && !strcmp(tgt->s, "unspec")) {
+        LV uv;
+        Sym *us;
+        if (!tgt->a || tgt->a->k != X_REF || tgt->a->next)
+            perr(tgt->line, "bad UNSPEC target", 0);
+        uv = rl(tgt->a);
+        us = uv.s;
+        if (uv.nu || us->ty == TY_STRUCT)
+            perr(tgt->line, "UNSPEC of an aggregate unsupported", 0);
+        if (us->ty == TY_FXB && us->p <= 31)
+            ln(cat5(uv.t, " = pl_unsx(pl_unbits(", cbit(rhs),
+                    us->p <= 15 ? ", 16), 16);" : ", 32), 32);", ""));
+        else if (us->ty == TY_FLT)
+            ln(cat5(uv.t, " = pl_unbits_d(", cbit(rhs), ");", ""));
+        else if (us->ty == TY_CHR)
+            ln(cat5("pl_as(", pvtxt(uv), ", pl_unbits_s(", cbit(rhs),
+                    "));"));
+        else if (us->ty == TY_BIT)
+            ln(cat5("pl_ab(", pvtxt(uv), ", ", cbit(rhs), ");"));
+        else
+            perr(tgt->line, "UNSPEC of this type unsupported", 0);
+        return;
+    }
     if (is_pseudo(tgt)) {
         LV sv;
         Node *a0 = tgt->a, *a1, *a2;
@@ -149,6 +178,38 @@ static void g_store(Node *tgt, Node *rhs)
     }
     v = rl(tgt);
     s = v.s;
+    if (s->ty == TY_AREA) {
+        LV r;
+        if (v.nu) perr(tgt->line, "array of areas unsupported", 0);
+        if (rhs->k == X_REF && !rhs->c && !rhs->a &&
+            !strcmp(rhs->s, "empty") && !lookup(rhs->s)) {
+            ln(cat2(v.t, ".used = 0;"));
+            return;
+        }
+        if (rhs->k != X_REF) perr(rhs->line, "AREA expected", 0);
+        r = rl(rhs);
+        if (r.s->ty != TY_AREA || r.nu)
+            perr(rhs->line, "AREA expected", 0);
+        ln(cat5("memcpy(&", v.t, ", &", r.t,
+                cat3(", sizeof ", v.t, ");")));
+        return;
+    }
+    if (s->ty == TY_LBL) {
+        Sym *lc, *lv2;
+        if (v.nu || rhs->k != X_REF || rhs->c || rhs->a)
+            perr(rhs->line, "label expected", 0);
+        lv2 = lookup(rhs->s);
+        if (lv2 && lv2->ty == TY_LBL) {
+            ln(cat4(v.t, " = ", lv2->cn, ";"));
+            return;
+        }
+        lc = lookupc(csc, rhs->s, C_LABEL);
+        if (!lc) perr(rhs->line, "undefined label", rhs->s);
+        if (lc->owner != cur)
+            perr(rhs->line, "label of another procedure:", rhs->s);
+        ln(cat4(v.t, " = ", itoa_((long)lc->id), ";"));
+        return;
+    }
     if (s->ty == TY_STRUCT && !v.nu) {
         LV r;
         if (rhs->k != X_REF) perr(rhs->line, "structure expected", 0);
@@ -179,8 +240,9 @@ static void g_store(Node *tgt, Node *rhs)
             return;
         }
         val = rhs_val(s, rhs);
-        tmp = newtemp(is_num(s) ? "double" : (s->ty == TY_PTR ?
-                      "void *" : "PS"));
+        tmp = newtemp(is_num(s) || s->picnum ? "double" :
+                      (s->ty == TY_PTR ? "void *" :
+                      (s->ty == TY_CPX ? "PC" : "PS")));
         ln(cat4(tmp, " = ", val, ";"));
         sa.val = tmp;
         forall(s, v.t, store_el, &sa);
@@ -431,7 +493,9 @@ static void g_return(Node *s)
         perr(s->line, "RETURN needs a value in function", p->name);
     }
     if (p->ty != TY_VOID) {
-        if (is_num(p)) {
+        if (p->ty == TY_CPX) {
+            v = ccx(s->a);
+        } else if (is_num(p)) {
             char *t = newtemp("double");
             v = cnum(s->a);
             if (is_long(p)) v = cat3("(double)pl_tol(", v, ")");
@@ -446,7 +510,8 @@ static void g_return(Node *s)
             v = cptr(s->a);
         }
         for (pm = p->params; pm; pm = pm->params)
-            if (pm->pcn && (is_num(pm) || pm->ty == TY_PTR) && !pm->nd)
+            if (pm->pcn && (is_num(pm) || pm->ty == TY_PTR ||
+                            pm->ty == TY_CPX) && !pm->nd)
                 ln(cat5("*", pm->pcn, " = ", pm->cn, ";"));
         if (cur->hason) {
             char *rt = newtemp(rettype(p));
@@ -458,7 +523,8 @@ static void g_return(Node *s)
         return;
     }
     for (pm = p->params; pm; pm = pm->params)
-        if (pm->pcn && (is_num(pm) || pm->ty == TY_PTR) && !pm->nd)
+        if (pm->pcn && (is_num(pm) || pm->ty == TY_PTR ||
+                            pm->ty == TY_CPX) && !pm->nd)
             ln(cat5("*", pm->pcn, " = ", pm->cn, ";"));
     if (cur->hason) ln("pl_hrest(&h_);");
     ln("return;");
@@ -467,8 +533,22 @@ static void g_return(Node *s)
 static void g_goto(Node *s)
 {
     Sym *l = lookupc(csc, s->s, C_LABEL);
+    Sym *vs = lookup(s->s);
     Fn *o;
     int i;
+    if (vs && vs->ty == TY_LBL) {
+        Scope *sc;
+        Sym *y;
+        ln(cat3("switch (", vs->cn, ") {"));
+        for (sc = csc; sc; sc = sc->par)
+            for (y = sc->syms; y; y = y->link)
+                if (y->cls == C_LABEL && y->owner == cur)
+                    ln(cat5("case ", itoa_((long)y->id), ": goto ",
+                            y->cn, ";"));
+        ln("default: pl_die(\"GOTO with an unset label\");");
+        ln("}");
+        return;
+    }
     if (!l) perr(s->line, "undefined label", s->s);
     o = l->owner;
     if (o == cur) {
@@ -522,6 +602,7 @@ static int condid(Node *s, char **fl)
         return 8;
     if (!strcmp(n, "finish")) return 9;
     if (!strcmp(n, "key")) return 10;
+    if (!strcmp(n, "area")) return 14;
     if (!strcmp(n, "transmit")) return 11;
     if (!strcmp(n, "endpage")) return 12;
     perr(s->line, "condition not supported:", n);
@@ -660,6 +741,23 @@ static void g_alloc(Node *s, int fr)
             }
             continue;
         }
+        if (it->c) {
+            LV av = rl(it->c);
+            if (av.s->ty != TY_AREA || av.nu)
+                perr(s->line, "IN needs an AREA variable", 0);
+            if (fr) {
+                ln(cat3("pl_afree(", ptr, ");"));
+                ln(cat2(ptr, " = 0;"));
+            } else {
+                ln(cat5(ptr, " = pl_aalloc(&", av.t, ".used, ",
+                        cat5(av.t, ".d, (long)sizeof ", av.t,
+                             ".d, sizeof(", cat2(top->tn, "));"))));
+                ln(cat3("if (", ptr, ") {"));
+                gen_fill(top, cat5("(*(", top->tn, " *)(", ptr, "))"));
+                ln("}");
+            }
+            continue;
+        }
         if (fr) {
             ln(cat3("pl_free(", ptr, ");"));
             ln(cat2(ptr, " = 0;"));
@@ -723,7 +821,8 @@ static void scope_inits(Scope *sc)
     for (y = sc->syms; y && n < 512; y = y->link) a[n++] = y;
     for (i = n - 1; i >= 0; i--) {
         y = a[i];
-        if (y->cls != C_VAR || y->par || y->isparam) continue;
+        if (y->cls != C_VAR || y->par || y->isparam || y->defbase)
+            continue;
         if (y->stor == ST_STAT || y->stor == ST_BASED ||
             y->stor == ST_CTL) continue;
         if (y->ty == TY_FILE || !y->cn) continue;

@@ -1,6 +1,6 @@
 /* p50_expr.c -- expression translation */
 
-enum { K_N = 1, K_S, K_B, K_P, K_V };
+enum { K_N = 1, K_S, K_B, K_P, K_V, K_C };
 
 static int ge_q = -1, ge_f = 0, uses_tmp = 0;
 static int subs_chk = 0;
@@ -61,10 +61,35 @@ static char *conv_num(char *t, int k, int line)
     return t;
 }
 
+static char *pvtxt(LV v);
+
+/* the numeric value of a numeric PICTURE variable, or 0 */
+static char *picnum_val(Node *e)
+{
+    Sym *s;
+    LV v;
+    if (e->k != X_REF || e->c || !(s = lookup(e->s)) ||
+        s->cls != C_VAR || !s->picnum)
+        return 0;
+    v = rl(e);
+    if (v.nu) return 0;
+    return cat5("pl_picval(", clit(s->pic, (long)strlen(s->pic)),
+                ", pl_ps(", pvtxt(v), "))");
+}
+
 static char *cnum(Node *e)
 {
     int k, q, f;
-    char *t = ge(e, &k);
+    char *t = picnum_val(e);
+    if (t) {
+        const char *pp = strpbrk(lookup(e->s)->pic, ".V");
+        long nf = 0;
+        for (; pp && *pp; pp++) if (strchr("9Z*", *pp)) nf++;
+        ge_q = (int)nf;
+        ge_f = 0;
+        return t;
+    }
+    t = ge(e, &k);
     q = ge_q;
     f = ge_f;
     t = conv_num(t, k, e->line);
@@ -287,6 +312,9 @@ static char *ref_value(Node *e, int *k)
     case TY_PTR:
         *k = K_P;
         return v.t;
+    case TY_CPX:
+        *k = K_C;
+        return v.t;
     }
     perr(e->line, "cannot use in an expression:", s->name);
     return "";
@@ -297,6 +325,54 @@ static char *ref_value(Node *e, int *k)
 static int same_store(Sym *a, Sym *b)
 {
     return a->ty == b->ty && is_long(a) == is_long(b);
+}
+
+/* built-in functions whose result is COMPLEX */
+static int cpx_fn(const char *n, Node *a0)
+{
+    if (!strcmp(n, "complex") || !strcmp(n, "conjg")) return 1;
+    if (!a0) return 0;
+    return (!strcmp(n, "sqrt") || !strcmp(n, "exp") ||
+            !strcmp(n, "log") || !strcmp(n, "sin") ||
+            !strcmp(n, "cos"));
+}
+
+static int cpx_node(Node *e)
+{
+    Sym *s;
+    const char *o;
+    if (!e) return 0;
+    switch (e->k) {
+    case X_NUM:
+        return e->im;
+    case X_UN:
+        return e->s[0] != '!' && cpx_node(e->a);
+    case X_BIN:
+        o = e->s;
+        if (strcmp(o, "+") && strcmp(o, "-") && strcmp(o, "*") &&
+            strcmp(o, "/") && strcmp(o, "**")) return 0;
+        return cpx_node(e->a) || cpx_node(e->b);
+    case X_REF:
+        s = e->c ? 0 : lookup(e->s);
+        if (s && s->cls == C_VAR) return s->ty == TY_CPX;
+        if (s && s->cls == C_PROC) return s->ty == TY_CPX;
+        if (!s && !e->c && name_is_builtin(e->s))
+            return cpx_fn(e->s, e->a) &&
+                   (e->s[0] == 'c' || cpx_node(e->a));
+        return 0;
+    }
+    return 0;
+}
+
+static char *ccx(Node *e)
+{
+    int k;
+    char *t;
+    if (cpx_node(e)) {
+        t = ge(e, &k);
+        return t;
+    }
+    return cat3("pl_cx(", cnum(e), ", 0.0)");
 }
 
 static char *gfile(Node *f);
@@ -337,6 +413,11 @@ static char *argp(Sym *pm, Node *a)
         if (x && x->ty == TY_PTR && !v.nu) return cat2("&", v.t);
         uses_tmp = 1;
         return cat3("pl_tpp(", cptr(a), ")");
+    }
+    if (pm->ty == TY_CPX) {
+        if (x && x->ty == TY_CPX && !v.nu) return cat2("&", v.t);
+        uses_tmp = 1;
+        return cat3("pl_tcp(", ccx(a), ")");
     }
     if (is_num(pm)) {
         if (x && is_num(x) && !v.nu && same_store(x, pm) &&
@@ -418,6 +499,7 @@ static char *gcall(Sym *p, Node *e, int *k)
     case TY_CHR: *k = K_S; uses_tmp = 1; break;
     case TY_BIT: *k = K_B; uses_tmp = 1; break;
     case TY_PTR: *k = K_P; break;
+    case TY_CPX: *k = K_C; break;
     default: *k = K_V; break;
     }
     if (p->copt && p->ty == TY_CHR)
@@ -448,6 +530,24 @@ static char *gbin(Node *e, int *k)
     char *o = e->s;
     char *a, *b;
     int ka, kb, q1, q2, f1, f2;
+    if ((e->a && cpx_node(e->a)) || (e->b && cpx_node(e->b))) {
+        a = ccx(e->a);
+        b = ccx(e->b);
+        ge_q = -1;
+        ge_f = 0;
+        if (!strcmp(o, "=") || !strcmp(o, "!=") || !strcmp(o, "^=")) {
+            *k = K_N;
+            return cat5(o[0] == '=' ? "(" : "(!", "pl_ceq(", a, ", ",
+                        cat2(b, "))"));
+        }
+        *k = K_C;
+        if (!strcmp(o, "+")) return cat5("pl_cadd(", a, ", ", b, ")");
+        if (!strcmp(o, "-")) return cat5("pl_csub(", a, ", ", b, ")");
+        if (!strcmp(o, "*")) return cat5("pl_cmul(", a, ", ", b, ")");
+        if (!strcmp(o, "/")) return cat5("pl_cdiv(", a, ", ", b, ")");
+        if (!strcmp(o, "**")) return cat5("pl_cpow(", a, ", ", b, ")");
+        perr(e->line, "operator not allowed on COMPLEX values", o);
+    }
     if (!strcmp(o, "||")) {
         a = ge(e->a, &ka);
         b = ge(e->b, &kb);
@@ -490,8 +590,10 @@ static char *gbin(Node *e, int *k)
             return cat5("(", a, o[0] == '=' ? " == " : " != ", b, ")");
         }
         if (ka == K_N || kb == K_N) {
-            a = conv_num(a, ka, e->line);
-            b = conv_num(b, kb, e->line);
+            char *pv = picnum_val(e->a);
+            a = pv ? pv : conv_num(a, ka, e->line);
+            pv = picnum_val(e->b);
+            b = pv ? pv : conv_num(b, kb, e->line);
             return cat5("(", a, cat3(" ", cmpop(o), " "), b, ")");
         }
         uses_tmp = 1;
@@ -531,6 +633,12 @@ static char *ge(Node *e, int *k)
     int ka;
     switch (e->k) {
     case X_NUM:
+        if (e->im) {
+            *k = K_C;
+            ge_q = -1;
+            ge_f = 0;
+            return cat3("pl_cx(0.0, ", dtoa_(e->dv), ")");
+        }
         *k = K_N;
         ge_q = e->fl ? -1 : e->n;
         ge_f = e->fl ? (e->n > 0 ? e->n : 1) : 0;
@@ -555,6 +663,13 @@ static char *ge(Node *e, int *k)
                 return cat3("pl_bnot(", a, ")");
             }
             perr(e->line, "bad operand for NOT", 0);
+        }
+        if (cpx_node(e->a)) {
+            *k = K_C;
+            ge_q = -1;
+            ge_f = 0;
+            a = ccx(e->a);
+            return e->s[0] == '-' ? cat3("pl_cneg(", a, ")") : a;
         }
         a = cnum(e->a);
         *k = K_N;

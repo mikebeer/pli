@@ -216,15 +216,61 @@ static void set_default_type(Sym *s)
     }
 }
 
+/* upper case, with repetition factors (3)9 written out */
+static char *pic_expand(const char *p)
+{
+    Sb b;
+    memset(&b, 0, sizeof b);
+    while (*p) {
+        if (*p == '(' && isdigit((unsigned char)p[1])) {
+            int n = atoi(p + 1);
+            while (*p && *p != ')') p++;
+            if (*p) p++;
+            if (*p) {
+                char c = (char)toupper((unsigned char)*p++);
+                while (n-- > 0) sb_c(&b, c);
+            }
+            continue;
+        }
+        sb_c(&b, (char)toupper((unsigned char)*p++));
+    }
+    return xdup(sb_str(&b));
+}
+
+static int pic_width(const char *p)
+{
+    int n = 0;
+    for (; *p; p++) {
+        if (*p == 'V') continue;
+        if ((p[0] == 'C' && p[1] == 'R') ||
+            (p[0] == 'D' && p[1] == 'B')) {
+            p++;
+            n++;
+        }
+        n++;
+    }
+    return n;
+}
+
 static void apply_type(Sym *s, Attr *a)
 {
     s->ext = a->ext;
+    if (a->pic) {
+        s->pic = pic_expand(a->pic);
+        s->picnum = strpbrk(s->pic, "AX") == 0;
+        s->ty = TY_CHR;
+        s->vary = 0;
+        s->len = pic_width(s->pic);
+        if (s->len < 1) perr(0, "empty picture for", s->name);
+        return;
+    }
     if (a->ty == TY_CHR || a->ty == TY_BIT) {
         s->ty = a->ty;
         s->len = a->len == -2 ? 1 : a->len;
         s->vary = a->vary;
     } else if (a->ty) {
         s->ty = a->ty;
+        if (a->ty == TY_AREA) s->len = a->len;
     } else if (a->fix || a->base) {
         int fix = a->fix, base = a->base;
         if (!fix) fix = 2;
@@ -250,8 +296,12 @@ static void apply_type(Sym *s, Attr *a)
             if (base == 1) s->p = (s->p * 3 + 9) / 10;
             if (s->p < 1) s->p = 1;
         }
+        if (a->cpx) s->ty = TY_CPX;
     } else if (a->isent) {
         s->ty = TY_ENT;
+    } else if (a->cpx) {
+        s->ty = TY_CPX;
+        s->p = 6;
     }
 }
 
@@ -262,6 +312,7 @@ static void copy_kids(Sym *dst, Sym *src, Scope *sc)
         n = newsym(sc, k->name, C_VAR);
         n->ty = k->ty; n->p = k->p; n->q = k->q;
         n->len = k->len; n->vary = k->vary;
+        n->pic = k->pic; n->picnum = k->picnum;
         n->nd = k->nd; n->star = k->star;
         memcpy(n->lo, k->lo, sizeof n->lo);
         memcpy(n->hi, k->hi, sizeof n->hi);
@@ -346,6 +397,10 @@ static char *base_text(Sym *s)
     case TY_FXB: return is_long(s) ? "long" : "double";
     case TY_FXD: return is_long(s) ? "long" : "double";
     case TY_FLT: return "double";
+    case TY_CPX: return "PC";
+    case TY_AREA:
+        return cat3("struct { long used; long pad; char d[",
+                    itoa_((long)s->len), "]; }");
     case TY_PTR: return "void *";
     case TY_FILE: return "PLF";
     case TY_STRUCT:
@@ -403,6 +458,29 @@ static void emit_storage(Sym *s)
         return;
     }
     sb_s(&gdecl, cat4("typedef ", decl_text(s, s->tn), ";", "\n"));
+    if (s->defbase) {
+        Sym *b = lookupc(s->sc ? s->sc : csc, s->defbase,
+                         C_VAR);
+        char *at;
+        if (!b || b->cls != C_VAR || !b->cn || b->stor == ST_BASED ||
+            b->stor == ST_CTL || b->isparam || b->ty == TY_FILE)
+            perr(0, "bad DEFINED base for", s->name);
+        if (b->defbase)
+            perr(0, "DEFINED on a DEFINED variable:", s->name);
+        if (is_str(s)) {
+            if (!is_str(b) || b->vary || s->vary || s->nd ||
+                b->nd || s->defpos < 1 ||
+                s->defpos - 1 + s->len != b->len)
+                perr(0, "DEFINED string must end where its base "
+                     "ends:", s->name);
+            at = cat3("((char *)&", b->cn, cat3(" + ",
+                      itoa_(s->defpos - 1), ")"));
+        } else {
+            at = cat2("&", b->cn);
+        }
+        s->cn = cat5("(*(", s->tn, " *)", at, ")");
+        return;
+    }
     if (s->stor == ST_BASED) return;
     if (s->stor == ST_CTL) {
         s->hptr = newsym(0, s->name, C_VAR);
@@ -438,6 +516,8 @@ static void setup_sym(Sym *s, Node *it, Scope *sc)
     s->frec = a->rec;
     s->fmode = a->mode;
     s->fkeyed = a->keyed;
+    s->defbase = a->defbase;
+    s->defpos = a->defpos ? (long)cval(a->defpos) : 1;
     if (it->b) set_dims(s, it->b);
     if (a->like) {
         Sym *l = lookupc(sc, a->like, C_VAR);
@@ -510,7 +590,13 @@ static void finish_sym(Sym *s)
     }
     if (s->cls != C_VAR) return;
     if (!s->ty) set_default_type(s);
-    if (s->ty == TY_ENT || s->ty == TY_LBL) return;
+    if (s->ty == TY_ENT) return;
+    if (s->ty == TY_LBL) {
+        s->cn = mkcn("v", s->id, s->name);
+        s->tn = "long";
+        sb_s(&gdecl, cat3("static long ", s->cn, ";\n"));
+        return;
+    }
     emit_storage(s);
 }
 

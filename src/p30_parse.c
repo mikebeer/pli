@@ -106,6 +106,7 @@ static Node *p_prim(void)
         n = newnode(X_NUM, TK.line);
         n->dv = TK.dv;
         n->fl = TK.fl;
+        n->im = TK.im;
         n->n = TK.q;
         nxt();
         return n;
@@ -418,6 +419,17 @@ static void p_attrs(Attr *a)
             nxt(); a->vary = 1;
         } else if (!strcmp(k, "pointer") || !strcmp(k, "ptr")) {
             nxt(); a->ty = TY_PTR;
+        } else if (!strcmp(k, "offset")) {
+            nxt(); a->ty = TY_PTR; skipparens();
+        } else if (!strcmp(k, "area")) {
+            nxt();
+            a->ty = TY_AREA;
+            a->len = 1000;
+            if (isop("(")) {
+                nxt();
+                a->len = (int)cval(p_expr());
+                expop(")");
+            }
         } else if (!strcmp(k, "file")) {
             nxt(); a->ty = TY_FILE; a->isfile = 1;
         } else if (!strcmp(k, "label")) {
@@ -460,6 +472,20 @@ static void p_attrs(Attr *a)
             if (isid("call"))
                 perr(TK.line, "INITIAL CALL unsupported", 0);
             a->init = p_initlist();
+        } else if (!strcmp(k, "complex") || !strcmp(k, "cplx")) {
+            nxt(); a->cpx = 1;
+        } else if (!strcmp(k, "picture") || !strcmp(k, "pic")) {
+            nxt();
+            if (TK.k != T_STR)
+                perr(TK.line, "picture string expected", 0);
+            a->pic = TK.s;
+            nxt();
+        } else if (!strcmp(k, "defined") || !strcmp(k, "def")) {
+            nxt();
+            if (isop("(")) { nxt(); a->defbase = expid(); expop(")"); }
+            else a->defbase = expid();
+        } else if (!strcmp(k, "position") || !strcmp(k, "pos")) {
+            nxt(); expop("("); a->defpos = p_expr(); expop(")");
         } else if (!strcmp(k, "like")) {
             nxt(); a->like = expid();
         } else if (!strcmp(k, "stream") || !strcmp(k, "sequential") ||
@@ -1092,8 +1118,13 @@ static Node *p_stmt(void)
                     l->a = pn;
                 }
                 if (!fr && isop("(")) l->b = p_dims();
-                if (!fr && isid("set")) {
-                    nxt(); expop("("); l->a = p_ref(); expop(")");
+                while (isid("set") || isid("in")) {
+                    int isin = isid("in");
+                    nxt(); expop("(");
+                    if (isin) l->c = p_ref();
+                    else if (!fr) l->a = p_ref();
+                    else perr(TK.line, "SET not allowed in FREE", 0);
+                    expop(")");
                 }
                 if (t) t->next = l; else n->a = l;
                 t = l;

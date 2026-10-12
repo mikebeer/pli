@@ -26,6 +26,7 @@ typedef struct {
     char *s;
     double dv;
     int fl;             /* STR: 1 bit, NUM: 1 float */
+    int im;             /* NUM: imaginary constant (3.5I) */
     int q;              /* NUM: decimals / mantissa digits */
     int line;
     char *file;
@@ -51,7 +52,7 @@ struct Attr {
     int p, q;
     int len, vary;
     int stor;           /* ST_* */
-    int ext, isent, isfile, rec, prt, mode, keyed;
+    int ext, isent, isfile, rec, prt, mode, keyed, cpx;
     Node *based, *init;
     char *like;
     Attr *ret;
@@ -59,13 +60,16 @@ struct Attr {
     int copt, hasdsc;   /* OPTIONS(C); ENTRY has a parameter list */
     Attr *dsc, *dnext;  /* ENTRY parameter descriptions */
     Node *dims;         /* bounds of a described parameter */
+    char *pic;          /* PICTURE string */
+    char *defbase;      /* DEFINED base variable */
+    Node *defpos;       /* POSITION of a DEFINED string */
 };
 
 struct Node {
     int k, line;
     char *s;
     double dv;
-    int n, fl;
+    int n, fl, im;
     Node *a, *b, *c, *d, *e;
     Node *next;
     Node *lab;
@@ -76,7 +80,7 @@ struct Node {
 };
 
 enum { TY_NONE, TY_FXB, TY_FXD, TY_FLT, TY_CHR, TY_BIT, TY_PTR,
-       TY_FILE, TY_ENT, TY_LBL, TY_STRUCT, TY_VOID };
+       TY_FILE, TY_ENT, TY_LBL, TY_STRUCT, TY_VOID, TY_CPX, TY_AREA };
 enum { ST_NONE, ST_AUTO, ST_STAT, ST_BASED, ST_CTL, ST_PARAM };
 enum { C_VAR, C_PROC, C_BUILTIN, C_LABEL };
 
@@ -106,6 +110,10 @@ struct Sym {
     int protodone;      /* prototype written */
     int hasdsc;         /* ENTRY with a parameter list */
     char *cpar;         /* C parameter of an OPTIONS(C) procedure */
+    char *pic;          /* expanded PICTURE */
+    int picnum;         /* numeric picture */
+    char *defbase;      /* DEFINED base variable */
+    long defpos;        /* POSITION of a DEFINED string, 1 up */
 };
 
 struct Scope {

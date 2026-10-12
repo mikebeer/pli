@@ -10,7 +10,8 @@ static const char *bi_names[] = {
     "string", "char", "bit", "fixed", "float", "binary", "decimal",
     "precision", "add", "multiply", "divide", "addr", "null", "date",
     "time", "oncode", "random", "allocation", "lineno", "low", "high",
-    "left", "right", "center", "real", 0
+    "left", "right", "center", "real", "unspec", "complex",
+    "conjg", "imag", 0
 };
 
 static int name_is_builtin(const char *n)
@@ -93,6 +94,33 @@ static char *gbuiltin(Node *e, int *k)
     *k = K_N;
     ge_q = -1;
     ge_f = 0;
+    if (!strcmp(n, "complex")) {
+        need(e, 2, 2);
+        *k = K_C;
+        return cat5("pl_cx(", cnum(argn(e, 0)), ", ",
+                    cnum(argn(e, 1)), ")");
+    }
+    if (!strcmp(n, "conjg")) {
+        need(e, 1, 1);
+        *k = K_C;
+        return cat3("pl_cconj(", ccx(argn(e, 0)), ")");
+    }
+    if (!strcmp(n, "imag")) {
+        need(e, 1, 1);
+        return cat3("pl_cim(", ccx(argn(e, 0)), ")");
+    }
+    if (nargs(e) == 1 && cpx_node(argn(e, 0))) {
+        a = ccx(argn(e, 0));
+        if (!strcmp(n, "real")) return cat3("pl_cre(", a, ")");
+        if (!strcmp(n, "abs")) return cat3("pl_cabs(", a, ")");
+        *k = K_C;
+        if (!strcmp(n, "sqrt")) return cat3("pl_csqrt(", a, ")");
+        if (!strcmp(n, "exp")) return cat3("pl_cexp(", a, ")");
+        if (!strcmp(n, "log")) return cat3("pl_clog(", a, ")");
+        if (!strcmp(n, "sin")) return cat3("pl_csin(", a, ")");
+        if (!strcmp(n, "cos")) return cat3("pl_ccos(", a, ")");
+        perr(e->line, "COMPLEX argument not allowed for", n);
+    }
     if (!strcmp(n, "abs")) {
         need(e, 1, 1);
         a = cnum(argn(e, 0));
@@ -277,6 +305,28 @@ static char *gbuiltin(Node *e, int *k)
         a = cstr(argn(e, 0));
         if (nargs(e) == 1) return a;
         return cat5("pl_chrn(", a, ", ", cnum(argn(e, 1)), ")");
+    }
+    if (!strcmp(n, "unspec")) {
+        LV v;
+        Sym *s;
+        need(e, 1, 1);
+        if (argn(e, 0)->k != X_REF)
+            perr(e->line, "UNSPEC needs a variable", 0);
+        v = rl(argn(e, 0));
+        s = v.s;
+        if (v.nu || s->ty == TY_STRUCT)
+            perr(e->line, "UNSPEC of an aggregate unsupported", 0);
+        *k = K_B;
+        uses_tmp = 1;
+        if (s->ty == TY_FXB && s->p <= 31)
+            return cat3("pl_ubits((unsigned long)(", v.t,
+                        s->p <= 15 ? "), 16)" : "), 32)");
+        if (s->ty == TY_FLT) return cat3("pl_ubits_d(", v.t, ")");
+        if (s->ty == TY_CHR)
+            return cat3("pl_ubits_s(pl_ps(", pvtxt(v), "))");
+        if (s->ty == TY_BIT) return cat3("pl_ps(", pvtxt(v), ")");
+        perr(e->line, "UNSPEC of this type unsupported", s->name);
+        return "";
     }
     if (!strcmp(n, "bit")) {
         need(e, 1, 2);

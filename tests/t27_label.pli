@@ -1,0 +1,18 @@
+T27: PROCEDURE OPTIONS(MAIN);
+  DECLARE L LABEL, M LABEL, I FIXED BINARY(31);
+  DO I = 1 TO 3;
+    IF I = 1 THEN L = A1;
+    ELSE IF I = 2 THEN L = B1;
+    ELSE L = C1;
+    GOTO L;
+  A1: PUT SKIP LIST('at A', I); GOTO NEXT;
+  B1: PUT SKIP LIST('at B', I); GOTO NEXT;
+  C1: PUT SKIP LIST('at C', I);
+  NEXT: ;
+  END;
+  M = DONE;
+  L = M;
+  GOTO L;
+  PUT SKIP LIST('not reached');
+DONE: PUT SKIP LIST('done');
+END T27;

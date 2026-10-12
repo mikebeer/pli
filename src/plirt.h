@@ -34,7 +34,8 @@ typedef struct { char *p; long *np; long max; } PV; /* variable */
 #define PLC_TRN  11
 #define PLC_PAGE 12
 #define PLC_FOFL 13
-#define PLC_N    14
+#define PLC_AREA 14
+#define PLC_N    15
 
 
 /* ---- files ---- */
@@ -226,7 +227,7 @@ static const char *pl_cn(int c)
     static const char *nm[] = { "?", "ERROR", "ZERODIVIDE",
         "OVERFLOW", "UNDERFLOW", "SIZE", "CONVERSION",
         "SUBSCRIPTRANGE", "STRINGRANGE", "FINISH", "KEY",
-        "TRANSMIT", "ENDPAGE", "FIXEDOVERFLOW" };
+        "TRANSMIT", "ENDPAGE", "FIXEDOVERFLOW", "AREA" };
     return (c > 0 && c < PLC_N) ? nm[c] : "?";
 }
 
@@ -234,7 +235,7 @@ static long pl_oc2;
 static void pl_sig(int c, const char *m)
 {
     static const long oc[] = { 0, 3, 320, 300, 330, 340, 600, 520,
-        560, 4, 50, 40, 90, 310 };
+        560, 4, 50, 40, 90, 310, 360 };
     void (*h)(void);
     pl_oncode = oc[c];
     if (pl_oc2) { pl_oncode = pl_oc2; pl_oc2 = 0; }
@@ -524,6 +525,108 @@ static void **pl_tpp(void *v)
     void **p = (void **)pl_ta((long)sizeof(void *));
     *p = v;
     return p;
+}
+
+/* ---- complex numbers ---- */
+typedef struct { double r, i; } PC;
+
+static PC pl_cx(double r, double i)
+{
+    PC z;
+    z.r = r;
+    z.i = i;
+    return z;
+}
+
+static PC *pl_tcp(PC v)
+{
+    PC *p = (PC *)pl_ta((long)sizeof(PC));
+    *p = v;
+    return p;
+}
+
+static double pl_cre(PC z) { return z.r; }
+static double pl_cim(PC z) { return z.i; }
+static PC pl_cneg(PC z) { return pl_cx(-z.r, -z.i); }
+static PC pl_cconj(PC z) { return pl_cx(z.r, -z.i); }
+static PC pl_cadd(PC a, PC b) { return pl_cx(a.r + b.r, a.i + b.i); }
+static PC pl_csub(PC a, PC b) { return pl_cx(a.r - b.r, a.i - b.i); }
+
+static PC pl_cmul(PC a, PC b)
+{
+    return pl_cx(a.r * b.r - a.i * b.i, a.r * b.i + a.i * b.r);
+}
+
+static double pl_cabs(PC z)
+{
+    double a = z.r < 0.0 ? -z.r : z.r, b = z.i < 0.0 ? -z.i : z.i, t;
+    if (a < b) { t = a; a = b; b = t; }
+    if (a == 0.0) return 0.0;
+    t = b / a;
+    return a * sqrt(1.0 + t * t);
+}
+
+static PC pl_cdiv(PC a, PC b)
+{
+    double d = b.r * b.r + b.i * b.i;
+    if (d == 0.0) {
+        pl_sig(PLC_ZDIV, 0);
+        return pl_cx(0.0, 0.0);
+    }
+    return pl_cx((a.r * b.r + a.i * b.i) / d,
+                 (a.i * b.r - a.r * b.i) / d);
+}
+
+static int pl_ceq(PC a, PC b) { return a.r == b.r && a.i == b.i; }
+
+static PC pl_cexp(PC z)
+{
+    double m = exp(z.r);
+    return pl_cx(m * cos(z.i), m * sin(z.i));
+}
+
+static PC pl_clog(PC z)
+{
+    if (z.r == 0.0 && z.i == 0.0) {
+        pl_sig(PLC_ERR, "LOG of zero");
+        return pl_cx(0.0, 0.0);
+    }
+    return pl_cx(log(pl_cabs(z)), atan2(z.i, z.r));
+}
+
+static PC pl_csqrt(PC z)
+{
+    double m = pl_cabs(z), r, i;
+    r = sqrt((m + z.r) / 2.0);
+    i = sqrt((m - z.r) / 2.0);
+    return pl_cx(r, z.i < 0.0 ? -i : i);
+}
+
+static PC pl_csin(PC z)
+{
+    return pl_cx(sin(z.r) * cosh(z.i), cos(z.r) * sinh(z.i));
+}
+
+static PC pl_ccos(PC z)
+{
+    return pl_cx(cos(z.r) * cosh(z.i), -sin(z.r) * sinh(z.i));
+}
+
+static PC pl_cpow(PC z, PC w)
+{
+    PC r = pl_cx(1.0, 0.0);
+    if (w.i == 0.0 && w.r == floor(w.r) && w.r >= -1000.0 &&
+        w.r <= 1000.0) {
+        long n = (long)w.r, k = n < 0 ? -n : n;
+        PC b = z;
+        while (k > 0) {
+            if (k & 1) r = pl_cmul(r, b);
+            b = pl_cmul(b, b);
+            k >>= 1;
+        }
+        return n < 0 ? pl_cdiv(pl_cx(1.0, 0.0), r) : r;
+    }
+    return pl_cexp(pl_cmul(w, pl_clog(z)));
 }
 
 /* ---- strings ---- */
@@ -1292,6 +1395,19 @@ static void pl_li(PLF *f, PS s)
     pl_os(f, s);
 }
 
+static void pl_li_c(PLF *f, PC z)
+{
+    PS a = pl_n2s(z.r, -1, 6);
+    PS b = pl_n2s(z.i < 0.0 ? -z.i : z.i, -1, 6);
+    char *p = (char *)pl_ta(a.n + b.n + 3);
+    memcpy(p, a.p, (size_t)a.n);
+    p[a.n] = z.i < 0.0 ? '-' : '+';
+    memcpy(p + a.n + 1, b.p, (size_t)b.n);
+    p[a.n + b.n + 1] = 'I';
+    p[a.n + b.n + 2] = 0;
+    pl_li(f, pl_mk(p, a.n + b.n + 2));
+}
+
 static void pl_li_n(PLF *f, double x, int q, int fp)
 {
     pl_li(f, pl_n2s(x, q, fp));
@@ -1598,6 +1714,40 @@ static void pl_gdend(PLF *f)
     f->gdm = 0;
 }
 
+static PC pl_s2c(PS s)
+{
+    long n = s.n, i, split = -1;
+    PC z;
+    while (n > 0 && s.p[n - 1] == ' ') n--;
+    if (n > 0 && (s.p[n - 1] == 'I' || s.p[n - 1] == 'i')) {
+        for (i = n - 2; i > 0; i--)
+            if ((s.p[i] == '+' || s.p[i] == '-') &&
+                s.p[i - 1] != 'E' && s.p[i - 1] != 'e') {
+                split = i;
+                break;
+            }
+        if (split > 0) {
+            z.r = pl_s2n(pl_mk(s.p, split));
+            z.i = pl_s2n(pl_mk(s.p + split, n - 1 - split));
+        } else {
+            z.r = 0.0;
+            z.i = pl_s2n(pl_mk(s.p, n - 1));
+        }
+    } else {
+        z.r = pl_s2n(pl_mk(s.p, n));
+        z.i = 0.0;
+    }
+    return z;
+}
+
+static void pl_gc_l(PLF *f, PC *z)
+{
+    int q;
+    PS t = pl_gtok(f, &q);
+    if (f->eofs) { f->eofs = 0; return; }
+    *z = pl_s2c(t);
+}
+
 static void pl_gn_l(PLF *f, double *x)
 {
     int q;
@@ -1839,6 +1989,244 @@ static void pl_reply(PV d)
     pl_as(d, pl_mk(b, n));
 }
 
+/* ---- PICTURE ---- */
+static int pl_nextsig(const char *p, int i)
+{
+    for (i++; p[i] == ',' || p[i] == '/' || p[i] == 'B'; i++) ;
+    return p[i];
+}
+
+static int pl_isdrift(int c)
+{
+    return c == '$' || c == '+' || c == '-';
+}
+
+/* digit positions before and after the point of a picture */
+static void pl_picinfo(const char *pic, int *ni, int *nf)
+{
+    int i, after = 0, dc = 0, c;
+    *ni = *nf = 0;
+    for (i = 0; pic[i]; i++) {
+        c = pic[i];
+        if (c == 'V' || c == '.') { after = 1; dc = 0; continue; }
+        if (c == ',' || c == '/' || c == 'B') continue;
+        if (pl_isdrift(c)) {
+            if (dc == c) { if (after) ++*nf; else ++*ni; }
+            else if (dc == 0 && pl_nextsig(pic, i) == c) dc = c;
+            continue;
+        }
+        dc = 0;
+        if (c == '9' || c == 'Z' || c == '*') {
+            if (after) ++*nf; else ++*ni;
+        }
+    }
+}
+
+static void pl_picfmt(PV d, const char *pic, double x)
+{
+    char out[160], buf[100], dig[100], sym = ' ';
+    int ni, nf, n = (int)strlen(pic), i, o = 0, di = 0, lead = 1;
+    int dc = 0, drift = 0, after = 0, neg, il, c;
+    char *dot;
+    PS r;
+    pl_picinfo(pic, &ni, &nf);
+    if (ni > 40) ni = 40;
+    if (nf > 40) nf = 40;
+    neg = x < 0.0;
+    if (neg) x = -x;
+    if (x > 1e30) x = 1e30;
+    x = pl_fx(x, nf);
+    sprintf(buf, "%.*f", nf, x);
+    dot = strchr(buf, '.');
+    il = dot ? (int)(dot - buf) : (int)strlen(buf);
+    for (i = 0; i < ni; i++) {
+        int src = il - ni + i;
+        dig[i] = src >= 0 ? buf[src] : '0';
+    }
+    for (i = 0; i < nf; i++) dig[ni + i] = dot ? dot[1 + i] : '0';
+    for (i = 0; i < ni + nf; i++) if (dig[i] != '0') break;
+    if (i == ni + nf) neg = 0;
+    for (i = 0; i < n && o < 150; i++) {
+        c = pic[i];
+        if (pl_isdrift(c) && (dc == c ||
+            (dc == 0 && pl_nextsig(pic, i) == c))) {
+            sym = c == '$' ? '$' : (c == '+' ? (neg ? '-' : '+') :
+                                    (neg ? '-' : ' '));
+            if (dc != c) {
+                dc = c;
+                drift = 1;
+                out[o++] = ' ';
+                continue;
+            }
+            c = 'D';
+        } else if (c == '9' || c == 'Z' || c == '*') {
+            dc = 0;
+        }
+        if (c == 'D' || c == '9' || c == 'Z' || c == '*') {
+            char g = dig[di++];
+            int hide = (c == 'Z' || c == '*' || c == 'D') &&
+                       lead && g == '0' && !after;
+            if (c == '9') hide = 0;
+            if (hide) {
+                out[o++] = c == '*' ? '*' : ' ';
+            } else {
+                if (lead && drift && o > 0) out[o - 1] = sym;
+                lead = 0;
+                out[o++] = g;
+            }
+        } else if (c == ',' || c == '/' || c == 'B') {
+            out[o++] = lead ? ' ' : (c == 'B' ? ' ' : (char)c);
+        } else if (c == '.') {
+            if (lead && drift && o > 0) out[o - 1] = sym;
+            lead = 0;
+            after = 1;
+            dc = 0;
+            out[o++] = '.';
+        } else if (c == 'V') {
+            if (lead && drift && o > 0) out[o - 1] = sym;
+            lead = 0;
+            after = 1;
+            dc = 0;
+        } else if (c == 'S' || c == '+') {
+            out[o++] = neg ? '-' : '+';
+        } else if (c == '-') {
+            out[o++] = neg ? '-' : ' ';
+        } else if (c == '$') {
+            out[o++] = '$';
+        } else if (c == 'C' && pic[i + 1] == 'R') {
+            out[o++] = neg ? 'C' : ' ';
+            out[o++] = neg ? 'R' : ' ';
+            i++;
+        } else if (c == 'D' && pic[i + 1] == 'B') {
+            out[o++] = neg ? 'D' : ' ';
+            out[o++] = neg ? 'B' : ' ';
+            i++;
+        } else {
+            out[o++] = (char)c;
+        }
+    }
+    r = pl_mk(out, o);
+    pl_as(d, r);
+}
+
+static double pl_picval(const char *pic, PS s)
+{
+    double acc = 0.0;
+    int neg = 0, seen = 0, fd = 0, ni, nf;
+    long i;
+    for (i = 0; i < s.n; i++) {
+        int c = (unsigned char)s.p[i];
+        if (c >= '0' && c <= '9') {
+            acc = acc * 10.0 + (c - '0');
+            if (seen) fd++;
+        } else if (c == '.') seen = 1;
+        else if (c == '-') neg = 1;
+        else if ((c == 'C' && i + 1 < s.n && s.p[i + 1] == 'R') ||
+                 (c == 'D' && i + 1 < s.n &&
+                  s.p[i + 1] == 'B')) neg = 1;
+    }
+    if (!seen && strchr(pic, 'V')) {
+        pl_picinfo(pic, &ni, &nf);
+        fd = nf;
+    }
+    while (fd-- > 0) acc /= 10.0;
+    return neg ? -acc : acc;
+}
+
+/* UNSPEC: the bit pattern of a value */
+static PS pl_ubits(unsigned long u, int w)
+{
+    char *p = (char *)pl_ta(w + 1);
+    int i;
+    for (i = 0; i < w; i++)
+        p[i] = ((u >> (w - 1 - i)) & 1UL) ? '1' : '0';
+    p[w] = 0;
+    return pl_mk(p, w);
+}
+
+static int pl_little(void)
+{
+    unsigned long one = 1;
+    return *(unsigned char *)&one == 1;
+}
+
+static PS pl_ubits_d(double x)
+{
+    unsigned char b[sizeof(double)];
+    char *p = (char *)pl_ta(8 * (long)sizeof(double) + 1);
+    int i, j, n = (int)sizeof(double);
+    memcpy(b, &x, sizeof x);
+    for (i = 0; i < n; i++) {
+        unsigned char c = b[pl_little() ? n - 1 - i : i];
+        for (j = 0; j < 8; j++)
+            p[i * 8 + j] = ((c >> (7 - j)) & 1) ? '1' : '0';
+    }
+    p[8 * n] = 0;
+    return pl_mk(p, 8L * n);
+}
+
+static PS pl_ubits_s(PS s)
+{
+    char *p = (char *)pl_ta(8 * s.n + 1);
+    long i;
+    int j;
+    for (i = 0; i < s.n; i++)
+        for (j = 0; j < 8; j++)
+            p[i * 8 + j] =
+                (((unsigned char)s.p[i] >> (7 - j)) & 1) ? '1' : '0';
+    p[8 * s.n] = 0;
+    return pl_mk(p, 8 * s.n);
+}
+
+static unsigned long pl_unbits(PS b, int w)
+{
+    unsigned long u = 0;
+    int i;
+    for (i = 0; i < w; i++)
+        u = (u << 1) | (i < b.n && b.p[i] == '1' ? 1UL : 0UL);
+    return u;
+}
+
+static long pl_unsx(unsigned long u, int w)
+{
+    double d = (double)u, m = 1.0;
+    int i;
+    for (i = 0; i < w; i++) m *= 2.0;
+    if (d >= m / 2.0) d -= m;
+    return (long)d;
+}
+
+static double pl_unbits_d(PS b)
+{
+    unsigned char c[sizeof(double)];
+    double x;
+    int i, j, n = (int)sizeof(double);
+    for (i = 0; i < n; i++) {
+        unsigned char v = 0;
+        for (j = 0; j < 8; j++)
+            v = (unsigned char)((v << 1) |
+                (i * 8 + j < b.n && b.p[i * 8 + j] == '1'));
+        c[pl_little() ? n - 1 - i : i] = v;
+    }
+    memcpy(&x, c, sizeof x);
+    return x;
+}
+
+static PS pl_unbits_s(PS b)
+{
+    long n = b.n / 8, i;
+    int j;
+    char *p = (char *)pl_ta(n + 1);
+    for (i = 0; i < n; i++) {
+        unsigned char v = 0;
+        for (j = 0; j < 8; j++)
+            v = (unsigned char)((v << 1) | (b.p[i * 8 + j] == '1'));
+        p[i] = (char)v;
+    }
+    p[n] = 0;
+    return pl_mk(p, n);
+}
+
 static void *pl_alloc(long n)
 {
     return pl_mem(n);
@@ -1847,6 +2235,49 @@ static void *pl_alloc(long n)
 static void pl_free(void *p)
 {
     free(p);
+}
+
+/* AREA storage: blocks with a header, in the area's own bytes */
+#define PL_AH 16
+
+static void *pl_aalloc(long *used, char *d, long cap, long n)
+{
+    long need = ((n + 7) / 8) * 8 + PL_AH, off = 0, *h;
+    while (off < *used) {
+        h = (long *)(d + off);
+        if (h[1]) {
+            while (off + h[0] < *used &&
+                   ((long *)(d + off + h[0]))[1])
+                h[0] += ((long *)(d + off + h[0]))[0];
+            if (h[0] >= need) {
+                if (h[0] - need >= PL_AH + 8) {
+                    long *r = (long *)(d + off + need);
+                    r[0] = h[0] - need;
+                    r[1] = 1;
+                    h[0] = need;
+                }
+                h[1] = 0;
+                memset(d + off + PL_AH, 0, (size_t)(h[0] - PL_AH));
+                return d + off + PL_AH;
+            }
+        }
+        off += h[0];
+    }
+    if (*used + need > cap) {
+        pl_sig(PLC_AREA, 0);
+        return 0;
+    }
+    h = (long *)(d + *used);
+    h[0] = need;
+    h[1] = 0;
+    memset((char *)h + PL_AH, 0, (size_t)(need - PL_AH));
+    *used += need;
+    return (char *)h + PL_AH;
+}
+
+static void pl_afree(void *p)
+{
+    if (p) ((long *)((char *)p - PL_AH))[1] = 1;
 }
 
 /* CONTROLLED storage: a stack of generations.  Each block starts

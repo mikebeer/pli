@@ -43,6 +43,13 @@ static void put_el(Sym *s, char *lv, void *arg)
         else
             ln(cat5("pl_li_n(", ia->ft, ", ", val, cat5(", ",
                     itoa_(q), ", ", itoa_(f), ");")));
+    } else if (s->ty == TY_CPX) {
+        if (ia->mode == 2) {
+            ln(cat5("pl_en(", ia->ft, ", ", lv, ".r);"));
+            ln(cat5("pl_en(", ia->ft, ", ", lv, ".i);"));
+        } else {
+            ln(cat5("pl_li_c(", ia->ft, ", ", lv, ");"));
+        }
     } else if (is_str(s)) {
         ln(cat5(ia->mode == 2 ? "pl_es(" : "pl_li(", ia->ft, ", ",
                 cat3("pl_ps(", pvtxt(v), ")"), ");"));
@@ -63,6 +70,15 @@ static void get_el(Sym *s, char *lv, void *arg)
         ln(cat5(ia->mode == 2 ? "pl_gn(" : "pl_gn_l(", ia->ft,
                 ", &", d, ");"));
         ln(numstore(s, lv, d));
+    } else if (s->ty == TY_CPX) {
+        if (ia->mode == 2) {
+            char *d1 = newtemp("double"), *d2 = newtemp("double");
+            ln(cat5("pl_gn(", ia->ft, ", &", d1, ");"));
+            ln(cat5("pl_gn(", ia->ft, ", &", d2, ");"));
+            ln(cat5(lv, " = pl_cx(", d1, ", ", cat2(d2, ");")));
+        } else {
+            ln(cat5("pl_gc_l(", ia->ft, ", &", lv, ");"));
+        }
     } else if (is_str(s)) {
         ln(cat5(ia->mode == 2 ? "pl_gs(" : "pl_gs_l(", ia->ft, ", ",
                 pvtxt(v), cat3(", ", s->ty == TY_BIT ? "1" : "0",
@@ -131,6 +147,15 @@ static void do_item(Node *it, IoArg *ia)
             else
                 ln(cat5("pl_li_n(", ia->ft, ", ", v, cat5(", ",
                         itoa_(q), ", ", itoa_(f), ");")));
+        } else if (k == K_C) {
+            if (ia->mode == 2) {
+                char *ct = newtemp("PC");
+                ln(cat4(ct, " = ", v, ";"));
+                ln(cat5("pl_en(", ia->ft, ", ", ct, ".r);"));
+                ln(cat5("pl_en(", ia->ft, ", ", ct, ".i);"));
+            } else {
+                ln(cat5("pl_li_c(", ia->ft, ", ", v, ");"));
+            }
         } else if (k == K_S || k == K_B) {
             ln(cat5(ia->mode == 2 ? "pl_es(" : "pl_li(", ia->ft, ", ",
                     v, ");"));

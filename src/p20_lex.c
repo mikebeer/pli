@@ -89,6 +89,10 @@ static void lexnum(TV *v, const char **pp, int line)
         val = strtod(b, &e);
     }
     memset(&t, 0, sizeof t);
+    if ((*p == 'i' || *p == 'I') && !idch(p[1])) {
+        t.im = 1;
+        p++;
+    }
     t.k = T_NUM;
     t.s = xdup(b);
     t.dv = val;
