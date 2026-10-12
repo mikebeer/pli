@@ -117,8 +117,13 @@ static char *gbuiltin(Node *e, int *k)
     if (!strcmp(n, "atan")) {
         need(e, 1, 2);
         a = cnum(argn(e, 0));
-        if (nargs(e) == 1) { ge_f = 6; return cat3("atan(", a, ")"); }
+        if (nargs(e) == 1) {
+            ge_q = -1;
+            ge_f = 6;
+            return cat3("atan(", a, ")");
+        }
         b = cnum(argn(e, 1));
+        ge_q = -1;
         ge_f = 6;
         return cat5("atan2(", a, ", ", b, ")");
     }

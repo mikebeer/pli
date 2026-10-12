@@ -1073,6 +1073,7 @@ static void pl_es(PLF *f, PS s)
 static void pl_eofsig(PLF *f)
 {
     f->eofs = 1;
+    pl_oncode = 70;
     if (f->eof) {
         f->eof();
         return;
