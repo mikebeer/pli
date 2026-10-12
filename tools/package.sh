@@ -14,6 +14,7 @@ for a in i686:win32 x86_64:win64; do
   rm -rf $w; mkdir -p $w
   cp $d/pli-$arch.exe $w/pli.exe
   cp src/plirt.h README.md $w/
+  [ -d $d/tcc-$tag ] && cp -r $d/tcc-$tag $w/tcc
   cp -r examples $w/
   [ -f docs/PLI-User-Guide.docx ] && cp docs/PLI-User-Guide.docx $w/
   (cd $d && rm -f pli-$v-$tag.zip &&

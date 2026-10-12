@@ -245,12 +245,136 @@ static char *outname(const char *in)
     return cat2(o, ".c");
 }
 
+
+/* ---- -c: translate, then build the program with a C compiler ---- */
+
+#ifdef _WIN32
+#include <windows.h>
+#define EXE_SFX ".exe"
+#define NULDEV " >NUL 2>&1"
+#define LIBM ""
+#define DIRSEP '\\'
+#else
+#define EXE_SFX ""
+#define NULDEV " >/dev/null 2>&1"
+#define LIBM " -lm"
+#define DIRSEP '/'
+#endif
+
+static char *self_dir(const char *argv0)
+{
+    char *d;
+    char *sl;
+#ifdef _WIN32
+    char buf[520];
+    DWORD n = GetModuleFileNameA(0, buf, 512);
+    if (n > 0 && n < 512) argv0 = buf;
+#endif
+    d = xdup(argv0);
+    sl = strrchr(d, DIRSEP);
+#ifdef _WIN32
+    if (!sl) sl = strrchr(d, '/');
+#endif
+    if (!sl) return xdup(".");
+    *sl = 0;
+    return d;
+}
+
+static int works(const char *cmd)
+{
+    return system(cat2(cmd, NULDEV)) == 0;
+}
+
+static int file_ok(const char *path)
+{
+    FILE *f = fopen(path, "rb");
+    if (!f) return 0;
+    fclose(f);
+    return 1;
+}
+
+/* choose a compiler: -cc name, PLI_CC, a C compiler on the path,
+   and as the last resort the bundled TinyCC next to pli */
+static char *pick_cc(const char *want, const char *dir, int *kind)
+{
+    static const char *names[] = { "gcc", "cc", "clang", "tcc", 0 };
+    char *b;
+    int i;
+    *kind = 0;
+    if (!want) want = getenv("PLI_CC");
+    b = cat4("\"", dir, "/tcc/tcc" EXE_SFX, "\"");
+    if (want && !strcmp(want, "bundled")) {
+        *kind = 1;
+        return b;
+    }
+    if (want) {
+        *kind = !strcmp(want, "cl") ? 2 : 0;
+        return xdup(want);
+    }
+    for (i = 0; names[i]; i++)
+        if (works(cat2(names[i], " --version"))) return xdup(names[i]);
+#ifdef _WIN32
+    if (works("cl /? ")) { *kind = 2; return xdup("cl"); }
+#endif
+    if (file_ok(cat2(dir, "/tcc/tcc" EXE_SFX))) {
+        *kind = 1;
+        return b;
+    }
+    return 0;
+}
+
+static int build_exe(const char *cfile, const char *exe,
+                     const char *want, const char *argv0)
+{
+    char *dir = self_dir(argv0);
+    char *cc;
+    char *cmd;
+    char *inc;
+    int kind, rc;
+    cc = pick_cc(want, dir, &kind);
+    if (!cc) {
+        fprintf(stderr, "pli: no C compiler found; install gcc, "
+                "clang or tcc, or use -cc name\n");
+        return 8;
+    }
+    inc = cat5("-I\"", dir, "\" -I\"", dir, "/src\" -I\"");
+    inc = cat5(inc, dir, "/../share/pli\" -I/usr/share/pli ",
+               "-I/usr/local/share/pli", "");
+    if (kind == 2)
+        cmd = cat5(cc, " /nologo /I\"", dir, "\" /Fe\"", exe);
+    else
+        cmd = cat5(cc, " ", inc, " -o \"", exe);
+    cmd = cat4(cmd, "\" \"", cfile, kind == 2 ? "\"" : "\"" LIBM);
+#ifdef _WIN32
+    cmd = cat3("\"", cmd, "\"");
+#endif
+    rc = system(cmd);
+    if (rc != 0) {
+        fprintf(stderr, "pli: C compiler failed: %s\n", cmd);
+        return 8;
+    }
+    return 0;
+}
+
+static char *exename(const char *in)
+{
+    char *o = xdup(in), *dot, *sl;
+    sl = strrchr(o, '/');
+    dot = strrchr(o, '.');
+    if (dot && (!sl || dot > sl)) *dot = 0;
+    return cat2(o, EXE_SFX);
+}
+
 static void usage(void)
 {
     fprintf(stderr, "pli %s -- PL/I to C89 translator\n", VERSION);
     fprintf(stderr,
-        "usage: pli [-o out.c] [-m l,r] [-s] source.pli\n");
+        "usage: pli [-c] [-o out] [-m l,r] [-s] [-cc cc] src.pli\n");
     fprintf(stderr, "  -o f    output file (- for stdout)\n");
+    fprintf(stderr, "  -c      also build the program (needs a C\n");
+    fprintf(stderr, "          compiler; -o names the exe)\n");
+    fprintf(stderr, "  -cc c   compiler for -c: a command, or\n");
+    fprintf(stderr, "          'bundled' for TinyCC next to pli\n");
     fprintf(stderr, "  -m l,r  source margins, e.g. -m 2,72\n");
     fprintf(stderr, "  -s      check subscripts at run time\n");
     exit(4);
@@ -258,13 +382,17 @@ static void usage(void)
 
 int main(int argc, char **argv)
 {
-    char *in = 0, *out = 0;
+    char *in = 0, *out = 0, *ccname = 0;
+    int build = 0;
     int i, a;
     Node *prog, *s, *mainp = 0;
     FILE *o;
     for (i = 1; i < argc; i++) {
         if (!strcmp(argv[i], "-o") && i + 1 < argc) out = argv[++i];
         else if (!strcmp(argv[i], "-s")) opt_subs = 1;
+        else if (!strcmp(argv[i], "-c")) build = 1;
+        else if (!strcmp(argv[i], "-cc") && i + 1 < argc)
+            ccname = argv[++i];
         else if (!strcmp(argv[i], "-m") && i + 1 < argc) {
             if (sscanf(argv[++i], "%d,%d", &lmar, &rmar) != 2)
                 usage();
@@ -297,8 +425,8 @@ int main(int argc, char **argv)
     for (a = 0; a < nfn; a++) gen_fn(fnall[a]);
     for (a = 0; a < nfn; a++) asm_fn(fnall[a]);
     gen_init_fn();
-    o = (out && !strcmp(out, "-")) ? stdout :
-        fopen(out ? out : outname(in), "w");
+    o = (!build && out && !strcmp(out, "-")) ? stdout :
+        fopen(build || !out ? outname(in) : out, "w");
     if (!o) die("cannot open output file");
     fprintf(o, "/* generated by pli %s from %s */\n", VERSION, in);
     fprintf(o, "#include \"plirt.h\"\n\n");
@@ -316,5 +444,8 @@ int main(int argc, char **argv)
     fprintf(o, "    %s();\n    pl_stop(0);\n    return 0;\n}\n",
             mainp->sym->cn);
     if (o != stdout) fclose(o);
+    if (build)
+        return build_exe(outname(in), out ? out : exename(in),
+                         ccname, argv[0]);
     return 0;
 }

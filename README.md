@@ -9,6 +9,9 @@ source lines are 71 columns or shorter.
     ./pli examples/sieve.pli -o sieve.c
     cc -std=c89 -Isrc -o sieve sieve.c -lm && ./sieve
 
+`pli -c prog.pli` also builds the program: it uses gcc/cc/clang/tcc if
+found, else the bundled TinyCC (Windows zips; `-cc name|bundled`).
+
 Options: `-o file`, `-m l,r` (source margins), `-s` (subscript checks).
 
 Windows (32 and 64 bit): `make win` cross-builds `pli-i686.exe` and
