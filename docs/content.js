@@ -34,6 +34,20 @@ const DEMO = (fig, cap, body, input) => {
   if (out.some((l) => /^ERROR|^pli:/.test(l))) throw new Error('demo ' + fig + ': ' + out.join('\n'));
   return CODE(fig, cap, src.replace(/\n+$/, '').split('\n').concat(['', '/* prints */']).concat(out));
 };
+// several source files translated together into one program
+const EXM = (fig, cap, files) => {
+  const d = fs.mkdtempSync('/tmp/plrun-');
+  files.forEach((f) => fs.copyFileSync(REPO + f, d + '/' + f.split('/').pop()));
+  const names = files.map((f) => f.split('/').pop()).join(' ');
+  let out;
+  try {
+    out = sh('cd ' + d + ' && ' + REPO + 'pli ' + names + ' -o s.c 2>&1 && cc -std=c89 -w -I' + REPO + 'src -o s s.c -lm 2>&1 && timeout 10 ./s 2>&1 | head -40');
+  } catch (e) { out = 'ERROR ' + e.message; }
+  sh('rm -rf ' + d);
+  const lines = [];
+  files.forEach((f) => { lines.push('/* ' + f.split('/').pop() + ' */'); lines.push(...FILE(f), ''); });
+  return CODE(fig, cap, lines.concat(['/* pli ' + names + ' */', '/* prints */']).concat(out.replace(/\n+$/, '').split('\n')));
+};
 const EX = (fig, cap, f, input) => CODE(fig, cap, FILE(f).concat(['', '/* prints */']).concat(RUN(f, input)));
 
 /* ------------------------------------------------------------------ Preface */
@@ -412,6 +426,11 @@ add(
     "  PUT SKIP LIST('not reached');",
     "  DONE: PUT SKIP LIST('finished');",
   ].join('\n')),
+  H2('Programs of several source files'),
+  P('A program may be spread over several source files, which the translator reads together: `pli main.pli util.pli -c -o prog`. The files make one program, so a procedure in one file can call a procedure of any other, and the order of the files does not matter. Exactly one procedure may have OPTIONS(MAIN). Error messages name the file.'),
+  P('A call to a procedure in another file is best declared with an ENTRY declaration, `DECLARE SQUARE ENTRY(FIXED BINARY(31)) RETURNS(FIXED BINARY(31));`, as in PL/I; the translator then finds the procedure of that name. The parameter descriptions in the ENTRY declaration are accepted but not checked against the procedure. A variable that is shared between files is declared `EXTERNAL` in every file that uses it; there is one copy of it, and it may be declared inside a procedure or outside. If several declarations have an INITIAL attribute, the first one wins. EXTERNAL structures are not shared.'),
+  EXM('modules', 'A program of two source files', ['examples/modules/main.pli', 'examples/modules/util.pli']),
+  P('This is whole-program translation. The files are not compiled separately and there are no object modules, so a change to one file means translating them all again. Because the result is one C file, it needs no linker features beyond those of a single program, and it builds the same way on CMS.'),
   H2('The preprocessor'),
   P('Two preprocessor statements are executed while the source is read. `%REPLACE name BY value;` replaces every later occurrence of the identifier ~name~ by a number or string. `%INCLUDE name;` inserts the text of the file ~name~ at this point: the translator looks for `name`, `name.inc`, `name.pli`, and then in the directory of the including file. Includes may be nested to 8 levels. The statements %PAGE, %SKIP, %NOPRINT and %NOTE are accepted and ignored.'),
   DEMO('macro', '%REPLACE', [
@@ -774,6 +793,7 @@ add(
     'MAX and MIN take scalars only; SUM and PROD take numeric arrays.',
     'The preprocessor knows only %REPLACE and %INCLUDE. A %REPLACE replaces identifiers by a number or a string.',
     'GET DATA, REWRITE, keyed access and the options KEY, KEYFROM and KEYTO are not available. READ INTO an array is not supported.',
+    'Source files are translated together; there is no separate compilation and no linking of object modules.',
     'A DO with several specifications cannot have labels inside its body that a GOTO from outside jumps to.',
     'The CMS build is untested: the translator and its output follow C89 and are checked for line length, but have not been compiled with GCC for VM/370.',
   ),

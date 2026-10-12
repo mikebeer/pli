@@ -388,6 +388,23 @@ static void decl_items(Scope *sc, Node *it)
     for (; it; it = it->next) {
         lvl = it->n;
         if (lvl <= 0) lvl = 1;
+        if (lvl == 1 && it->at && it->at->ext && !it->at->isent &&
+            !it->at->isfile && strcmp(it->s, "*") &&
+            !(it->next && it->next->n > 1)) {
+            /* EXTERNAL variable: one copy, shared by all modules */
+            s = find_in_scope(root, it->s);
+            if (s && s->ext && s->cls == C_VAR) {
+                if (it->at->init && !s->init) s->init = it->at->init;
+                continue;
+            }
+            if (sc != root) {
+                s = newsym(root, it->s, C_VAR);
+                s->level = 1;
+                setup_sym(s, it, root);
+                finish_sym(s);
+                continue;
+            }
+        }
         if (!strcmp(it->s, "*")) {
             s = newsym(0, "*", C_VAR);
         } else if (lvl == 1 && (s = find_in_scope(sc, it->s)) &&

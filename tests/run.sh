@@ -40,6 +40,29 @@ for f in tests/*.pli; do
     fail=`expr $fail + 1`
   fi
 done
+# multi-file programs: tests/multi/NAME/*.pli and NAME/expected.out
+for d in tests/multi/*/; do
+  n=`basename $d`
+  if ! $PLI $d*.pli -o $T/$n.c 2>$T/$n.err; then
+    echo "FAIL $n (translate): `cat $T/$n.err`"
+    fail=`expr $fail + 1`
+    continue
+  fi
+  if ! $CC $CFLAGS -I$T -o $T/$n $T/$n.c -lm 2>$T/$n.cerr; then
+    echo "FAIL $n (C compile)"
+    head -5 $T/$n.cerr
+    fail=`expr $fail + 1`
+    continue
+  fi
+  ( cd $T && timeout 10 ./$n < /dev/null > $n.act 2>&1 )
+  if cmp -s $T/$n.act ${d}expected.out; then
+    pass=`expr $pass + 1`
+  else
+    echo "FAIL $n (output differs)"
+    diff $T/$n.act ${d}expected.out | head -10
+    fail=`expr $fail + 1`
+  fi
+done
 echo "passed $pass, failed $fail"
 rm -rf $T
 [ $fail = 0 ]

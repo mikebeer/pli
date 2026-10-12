@@ -326,21 +326,32 @@ static void preproc(TV *in, TV *out, int depth)
 
 static TV tokens;
 static long ptk = 0;
+static int lastline = 1;
 
 static void lexfile(const char *name)
 {
     char *src = rdsrc(name);
     TV raw;
-    Tok e;
+    long i;
     if (!src) perr(0, "cannot open source file", name);
+    if (nsrc >= MAXSRC) perr(0, "too many source files", 0);
     memset(&raw, 0, sizeof raw);
     curfile = xdup(name);
+    srcfiles[nsrc++] = curfile;
     lexbuf(&raw, src);
+    for (i = 0; i < raw.n; i++) raw.a[i].line += nsrc * LINEMUL;
     preproc(&raw, &tokens, 0);
+    lastline = raw.n ? raw.a[raw.n - 1].line : 1;
+}
+
+/* end of all source files: add the end marks */
+static void lexend(void)
+{
+    Tok e;
     memset(&e, 0, sizeof e);
     e.k = T_EOF;
     e.s = "";
-    e.line = raw.n ? raw.a[raw.n - 1].line : 1;
+    e.line = lastline;
     tv_add(&tokens, e);
     tv_add(&tokens, e);
     tv_add(&tokens, e);

@@ -369,7 +369,7 @@ static void usage(void)
 {
     fprintf(stderr, "pli %s -- PL/I to C89 translator\n", VERSION);
     fprintf(stderr,
-        "usage: pli [-c] [-o out] [-m l,r] [-s] [-cc cc] src.pli\n");
+        "usage: pli [-c] [-o out] [-m l,r] [-s] [-cc cc] src ...\n");
     fprintf(stderr, "  -o f    output file (- for stdout)\n");
     fprintf(stderr, "  -c      also build the program (needs a C\n");
     fprintf(stderr, "          compiler; -o names the exe)\n");
@@ -383,6 +383,8 @@ static void usage(void)
 int main(int argc, char **argv)
 {
     char *in = 0, *out = 0, *ccname = 0;
+    char *more[MAXSRC];
+    int nmore = 0;
     int build = 0;
     int i, a;
     Node *prog, *s, *mainp = 0;
@@ -398,16 +400,21 @@ int main(int argc, char **argv)
                 usage();
         } else if (argv[i][0] == '-' && argv[i][1]) usage();
         else if (!in) in = argv[i];
+        else if (nmore < MAXSRC - 1) more[nmore++] = argv[i];
         else usage();
     }
     if (!in) usage();
     lexfile(in);
+    for (i = 0; i < nmore; i++) lexfile(more[i]);
+    lexend();
     prog = p_program();
     root = newscope(0, 0, 0);
     csc = root;
     scan_stmts(root, prog, 0);
     for (s = prog; s; s = s->next) {
         if (s->k == S_PROC) {
+            if ((s->fl & 2) && mainp && (mainp->fl & 2))
+                perr(s->line, "second OPTIONS(MAIN) procedure", 0);
             if (!mainp || (s->fl & 2)) {
                 if (!mainp || !(mainp->fl & 2)) mainp = s;
             }

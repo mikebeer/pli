@@ -352,6 +352,12 @@ static char *gcall(Sym *p, Node *e, int *k)
     Sym *pm;
     Node *a;
     int n = 0, first = 1;
+    if (!p->pn) {
+        /* ENTRY declaration: use the procedure of that name,
+           which may be in another source file */
+        Sym *q = find_in_scope(root, p->name);
+        if (q && q != p && q->cls == C_PROC && q->pn) p = q;
+    }
     if (!p->pn) perr(e->line, "procedure has no definition:", p->name);
     memset(&b, 0, sizeof b);
     sb_s(&b, p->cn);

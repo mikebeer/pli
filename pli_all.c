@@ -135,10 +135,24 @@ static void die(const char *m)
     exit(12);
 }
 
+#define MAXSRC 32
+#define LINEMUL 1000000
+static const char *srcfiles[MAXSRC];
+static int nsrc = 0;
+
 static void perr(int line, const char *m, const char *a)
 {
-    fprintf(stderr, "%s: line %d: %s%s%s\n", progname, line, m,
-            a ? " " : "", a ? a : "");
+    const char *f = 0;
+    if (line >= LINEMUL && line / LINEMUL <= nsrc) {
+        f = srcfiles[line / LINEMUL - 1];
+        line %= LINEMUL;
+    }
+    if (f)
+        fprintf(stderr, "%s: %s: line %d: %s%s%s\n", progname, f,
+                line, m, a ? " " : "", a ? a : "");
+    else
+        fprintf(stderr, "%s: line %d: %s%s%s\n", progname, line, m,
+                a ? " " : "", a ? a : "");
     exit(8);
 }
 
@@ -583,21 +597,32 @@ static void preproc(TV *in, TV *out, int depth)
 
 static TV tokens;
 static long ptk = 0;
+static int lastline = 1;
 
 static void lexfile(const char *name)
 {
     char *src = rdsrc(name);
     TV raw;
-    Tok e;
+    long i;
     if (!src) perr(0, "cannot open source file", name);
+    if (nsrc >= MAXSRC) perr(0, "too many source files", 0);
     memset(&raw, 0, sizeof raw);
     curfile = xdup(name);
+    srcfiles[nsrc++] = curfile;
     lexbuf(&raw, src);
+    for (i = 0; i < raw.n; i++) raw.a[i].line += nsrc * LINEMUL;
     preproc(&raw, &tokens, 0);
+    lastline = raw.n ? raw.a[raw.n - 1].line : 1;
+}
+
+/* end of all source files: add the end marks */
+static void lexend(void)
+{
+    Tok e;
     memset(&e, 0, sizeof e);
     e.k = T_EOF;
     e.s = "";
-    e.line = raw.n ? raw.a[raw.n - 1].line : 1;
+    e.line = lastline;
     tv_add(&tokens, e);
     tv_add(&tokens, e);
     tv_add(&tokens, e);
@@ -2088,6 +2113,23 @@ static void decl_items(Scope *sc, Node *it)
     for (; it; it = it->next) {
         lvl = it->n;
         if (lvl <= 0) lvl = 1;
+        if (lvl == 1 && it->at && it->at->ext && !it->at->isent &&
+            !it->at->isfile && strcmp(it->s, "*") &&
+            !(it->next && it->next->n > 1)) {
+            /* EXTERNAL variable: one copy, shared by all modules */
+            s = find_in_scope(root, it->s);
+            if (s && s->ext && s->cls == C_VAR) {
+                if (it->at->init && !s->init) s->init = it->at->init;
+                continue;
+            }
+            if (sc != root) {
+                s = newsym(root, it->s, C_VAR);
+                s->level = 1;
+                setup_sym(s, it, root);
+                finish_sym(s);
+                continue;
+            }
+        }
         if (!strcmp(it->s, "*")) {
             s = newsym(0, "*", C_VAR);
         } else if (lvl == 1 && (s = find_in_scope(sc, it->s)) &&
@@ -2591,6 +2633,12 @@ static char *gcall(Sym *p, Node *e, int *k)
     Sym *pm;
     Node *a;
     int n = 0, first = 1;
+    if (!p->pn) {
+        /* ENTRY declaration: use the procedure of that name,
+           which may be in another source file */
+        Sym *q = find_in_scope(root, p->name);
+        if (q && q != p && q->cls == C_PROC && q->pn) p = q;
+    }
     if (!p->pn) perr(e->line, "procedure has no definition:", p->name);
     memset(&b, 0, sizeof b);
     sb_s(&b, p->cn);
@@ -4575,7 +4623,7 @@ static void usage(void)
 {
     fprintf(stderr, "pli %s -- PL/I to C89 translator\n", VERSION);
     fprintf(stderr,
-        "usage: pli [-c] [-o out] [-m l,r] [-s] [-cc cc] src.pli\n");
+        "usage: pli [-c] [-o out] [-m l,r] [-s] [-cc cc] src ...\n");
     fprintf(stderr, "  -o f    output file (- for stdout)\n");
     fprintf(stderr, "  -c      also build the program (needs a C\n");
     fprintf(stderr, "          compiler; -o names the exe)\n");
@@ -4589,6 +4637,8 @@ static void usage(void)
 int main(int argc, char **argv)
 {
     char *in = 0, *out = 0, *ccname = 0;
+    char *more[MAXSRC];
+    int nmore = 0;
     int build = 0;
     int i, a;
     Node *prog, *s, *mainp = 0;
@@ -4604,16 +4654,21 @@ int main(int argc, char **argv)
                 usage();
         } else if (argv[i][0] == '-' && argv[i][1]) usage();
         else if (!in) in = argv[i];
+        else if (nmore < MAXSRC - 1) more[nmore++] = argv[i];
         else usage();
     }
     if (!in) usage();
     lexfile(in);
+    for (i = 0; i < nmore; i++) lexfile(more[i]);
+    lexend();
     prog = p_program();
     root = newscope(0, 0, 0);
     csc = root;
     scan_stmts(root, prog, 0);
     for (s = prog; s; s = s->next) {
         if (s->k == S_PROC) {
+            if ((s->fl & 2) && mainp && (mainp->fl & 2))
+                perr(s->line, "second OPTIONS(MAIN) procedure", 0);
             if (!mainp || (s->fl & 2)) {
                 if (!mainp || !(mainp->fl & 2)) mainp = s;
             }

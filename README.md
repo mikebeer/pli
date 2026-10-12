@@ -12,6 +12,9 @@ source lines are 71 columns or shorter.
 `pli -c prog.pli` also builds the program: it uses gcc/cc/clang/tcc if
 found, else the bundled TinyCC (Windows zips; `-cc name|bundled`).
 
+Several source files make one program: `pli -c main.pli util.pli`
+(ENTRY declarations and EXTERNAL variables work across files).
+
 Options: `-o file`, `-m l,r` (source margins), `-s` (subscript checks).
 
 Windows (32 and 64 bit): `make win` cross-builds `pli-i686.exe` and

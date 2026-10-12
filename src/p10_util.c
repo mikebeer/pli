@@ -8,10 +8,24 @@ static void die(const char *m)
     exit(12);
 }
 
+#define MAXSRC 32
+#define LINEMUL 1000000
+static const char *srcfiles[MAXSRC];
+static int nsrc = 0;
+
 static void perr(int line, const char *m, const char *a)
 {
-    fprintf(stderr, "%s: line %d: %s%s%s\n", progname, line, m,
-            a ? " " : "", a ? a : "");
+    const char *f = 0;
+    if (line >= LINEMUL && line / LINEMUL <= nsrc) {
+        f = srcfiles[line / LINEMUL - 1];
+        line %= LINEMUL;
+    }
+    if (f)
+        fprintf(stderr, "%s: %s: line %d: %s%s%s\n", progname, f,
+                line, m, a ? " " : "", a ? a : "");
+    else
+        fprintf(stderr, "%s: line %d: %s%s%s\n", progname, line, m,
+                a ? " " : "", a ? a : "");
     exit(8);
 }
 
