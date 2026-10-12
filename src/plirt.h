@@ -11,6 +11,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>
+#include <float.h>
 #include <time.h>
 #include <ctype.h>
 #include <setjmp.h>
@@ -32,7 +33,8 @@ typedef struct { char *p; long *np; long max; } PV; /* variable */
 #define PLC_KEY  10
 #define PLC_TRN  11
 #define PLC_PAGE 12
-#define PLC_N    13
+#define PLC_FOFL 13
+#define PLC_N    14
 
 
 /* ---- files ---- */
@@ -198,7 +200,7 @@ static const char *pl_cn(int c)
     static const char *nm[] = { "?", "ERROR", "ZERODIVIDE",
         "OVERFLOW", "UNDERFLOW", "SIZE", "CONVERSION",
         "SUBSCRIPTRANGE", "STRINGRANGE", "FINISH", "KEY",
-        "TRANSMIT", "ENDPAGE" };
+        "TRANSMIT", "ENDPAGE", "FIXEDOVERFLOW" };
     return (c > 0 && c < PLC_N) ? nm[c] : "?";
 }
 
@@ -206,7 +208,7 @@ static long pl_oc2;
 static void pl_sig(int c, const char *m)
 {
     static const long oc[] = { 0, 3, 320, 300, 330, 340, 600, 520,
-        560, 4, 50, 40, 90 };
+        560, 4, 50, 40, 90, 310 };
     void (*h)(void);
     pl_oncode = oc[c];
     if (pl_oc2) { pl_oncode = pl_oc2; pl_oc2 = 0; }
@@ -222,6 +224,7 @@ static void pl_sig(int c, const char *m)
     fprintf(stderr, "PLI: %s condition raised%s%s\n", pl_cn(c),
             m ? ": " : "", m ? m : "");
     if (c == PLC_ERR || c == PLC_FIN) pl_stop(12);
+    if (c == PLC_UFL) return;
     pl_sig(PLC_ERR, 0);
 }
 
@@ -244,6 +247,63 @@ static long pl_tol(double x)
     return (long)x;
 }
 
+/* stores into FIXED and FLOAT variables, with the conditions */
+static long pl_tolf(double x)
+{
+    if (x >= 2147483648.0 || x <= -2147483648.0) {
+        pl_sig(PLC_FOFL, 0);
+        return x < 0.0 ? -2147483647L : 2147483647L;
+    }
+    return (long)x;
+}
+
+static long pl_stl(double x, double lim)
+{
+    if (x >= lim || x <= -lim) {
+        pl_sig(PLC_SIZE, 0);
+        if (x >= 2147483648.0) return 2147483647L;
+        if (x <= -2147483648.0) return -2147483647L;
+        return (long)x;
+    }
+    return pl_tolf(x);
+}
+
+static double pl_sfl(double x)
+{
+    double a = x < 0.0 ? -x : x;
+    if (x != x) return x;
+    if (a > DBL_MAX) {
+        pl_sig(PLC_OFL, 0);
+        return x < 0.0 ? -DBL_MAX : DBL_MAX;
+    }
+    if (a != 0.0 && a < DBL_MIN) {
+        pl_sig(PLC_UFL, 0);
+        return 0.0;
+    }
+    return x;
+}
+
+static double pl_fmul(double a, double b)
+{
+    double r = a * b;
+    if (r == 0.0 && a != 0.0 && b != 0.0) pl_sig(PLC_UFL, 0);
+    return r;
+}
+
+static double pl_p10(int q);
+static double pl_fx(double x, int q);
+
+static double pl_stf(double x, int q, double lim, int chk)
+{
+    double v = pl_fx(x, q), a = v < 0.0 ? -v : v;
+    if (chk && a >= lim) pl_sig(PLC_SIZE, 0);
+    else if (a >= 9.2e18) {
+        pl_sig(PLC_FOFL, 0);
+        return v < 0.0 ? -9.2e18 : 9.2e18;
+    }
+    return v;
+}
+
 static double pl_p10(int q)
 {
     double s = 1.0;
@@ -256,7 +316,12 @@ static double pl_fx(double x, int q)
     double s = pl_p10(q), t;
     int neg = x < 0.0;
     if (neg) x = -x;
-    t = floor(x * s + 1e-9 + x * s * 1e-14);
+    t = x * s;
+    {
+        double fl = floor(t);
+        if (t - fl > 1.0 - (1e-9 + 2.0 * DBL_EPSILON * t)) fl += 1.0;
+        t = fl;
+    }
     t /= s;
     return neg ? -t : t;
 }
@@ -267,7 +332,11 @@ static double pl_div(double a, double b)
         pl_sig(PLC_ZDIV, 0);
         return 0.0;
     }
-    return a / b;
+    {
+        double r = a / b;
+        if (r == 0.0 && a != 0.0) pl_sig(PLC_UFL, 0);
+        return r;
+    }
 }
 
 static double pl_pow(double a, double b)

@@ -1,0 +1,9 @@
+FIXEDOVERFLOW           310
+B =                     2147483647
+W =                     4398046511107
+D =                     1234567890123.25
+OVERFLOW                300
+Y big                   1
+UNDERFLOW               330
+Y =                     0.00000000000000E+00
+SIZE                    340

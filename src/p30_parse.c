@@ -940,6 +940,10 @@ static Node *p_stmt(void)
                         pre |= PRE_SUBS;
                     if (tisid(&tokens.a[i], "nosubscriptrange"))
                         pre |= PRE_NOCHK;
+                    if (tisid(&tokens.a[i], "size"))
+                        pre |= PRE_SIZE;
+                    if (tisid(&tokens.a[i], "nosize"))
+                        pre |= PRE_NOSZ;
                 }
                 ptk = m + 2;
                 continue;

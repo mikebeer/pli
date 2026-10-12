@@ -26,10 +26,26 @@ static char *lbl(const char *p, int id)
 /* store a numeric value text into symbol s at lvalue lv */
 static char *numstore(Sym *s, const char *lv, const char *rv)
 {
-    if (is_long(s)) return cat5(lv, " = pl_tol(", rv, ")", ";");
-    if (s->ty == TY_FXD)
-        return cat5(lv, " = pl_fx(", rv, cat3(", ", itoa_(s->q), ")"),
-                    ";");
+    char lim[40];
+    double two = 1.0;
+    int i;
+    if (s->ty == TY_FXB) {
+        for (i = 0; i < s->p; i++) two *= 2.0;
+        sprintf(lim, "%.1f", two);
+    }
+    else if (s->ty == TY_FXD)
+        sprintf(lim, "1e%d", s->p - s->q);
+    if (is_long(s)) {
+        if (size_chk)
+            return cat5(lv, " = pl_stl(", rv,
+                        cat3(", ", lim, ")"), ";");
+        return cat5(lv, " = pl_tolf(", rv, ")", ";");
+    }
+    if (s->ty == TY_FXB || s->ty == TY_FXD)
+        return cat5(lv, " = pl_stf(", rv, cat5(", ", itoa_(s->q), ", ",
+                    lim, size_chk ? ", 1)" : ", 0)"), ";");
+    if (s->ty == TY_FLT)
+        return cat5(lv, " = pl_sfl(", rv, ")", ";");
     return cat4(lv, " = ", rv, ";");
 }
 
@@ -469,8 +485,8 @@ static int condid(Node *s, char **fl)
     if (!strcmp(n, "error") || !strcmp(n, "undefinedfile") ||
         !strcmp(n, "name") || !strcmp(n, "record")) return 1;
     if (!strcmp(n, "zerodivide")) return 2;
-    if (!strcmp(n, "overflow") || !strcmp(n, "fixedoverflow"))
-        return 3;
+    if (!strcmp(n, "overflow")) return 3;
+    if (!strcmp(n, "fixedoverflow")) return 13;
     if (!strcmp(n, "underflow")) return 4;
     if (!strcmp(n, "size")) return 5;
     if (!strcmp(n, "conversion")) return 6;
@@ -725,13 +741,16 @@ static void gs(Node *s)
     Node *l;
     int save = uses_tmp, mine;
     Sb saved;
-    int sub = 0;
+    int sub = 0, szs = 0;
     for (l = s->lab; l && s->k != S_PROC; l = l->next) {
         Sym *y = lookupc(csc, l->s, C_LABEL);
         if (y) ln(cat2(y->cn, ": ;"));
     }
     if (s->pre & PRE_SUBS) { sub = subs_chk; subs_chk = 1; }
     if (s->pre & PRE_NOCHK) { sub = subs_chk; subs_chk = 0; }
+    szs = size_chk;
+    if (s->pre & PRE_SIZE) size_chk = 1;
+    if (s->pre & PRE_NOSZ) size_chk = 0;
     uses_tmp = 0;
     saved = cur->body;
     memset(&cur->body, 0, sizeof cur->body);
@@ -751,6 +770,6 @@ static void gs(Node *s)
             sb_s(&cur->body, sb_str(&got));
         }
     }
-    if (s->pre) subs_chk = sub;
+    if (s->pre) { subs_chk = sub; size_chk = szs; }
     uses_tmp = save;
 }

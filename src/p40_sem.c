@@ -117,8 +117,8 @@ static Sym *lookup(const char *name)
 
 static int is_long(Sym *s)
 {
-    return s->ty == TY_FXB || (s->ty == TY_FXD && s->q == 0 &&
-                               s->p <= 9);
+    return (s->ty == TY_FXB && s->p <= 31) ||
+           (s->ty == TY_FXD && s->q == 0 && s->p <= 9);
 }
 
 /* functions declared by the C headers that plirt.h includes: a
@@ -159,7 +159,8 @@ static int is_libc(const char *n)
 static const char *ctype_of(Sym *s)
 {
     switch (s->ty) {
-    case TY_FXB: return s->p <= 15 ? "short" : "int";
+    case TY_FXB:
+        return s->p <= 15 ? "short" : (s->p <= 31 ? "int" : "double");
     case TY_FXD:
         return (s->q == 0 && s->p <= 9) ? "int" : "double";
     case TY_FLT: return s->p <= 7 ? "float" : "double";
@@ -219,11 +220,13 @@ static void apply_type(Sym *s, Attr *a)
             if (base == 1) {
                 s->ty = TY_FXB;
                 s->p = a->p < 0 ? 15 : a->p;
-                if (s->p > 31) perr(0, "FIXED BINARY precision > 31",
+                if (s->p > 63) perr(0, "FIXED BINARY precision > 63",
                                     s->name);
             } else {
                 s->ty = TY_FXD;
                 s->p = a->p < 0 ? 5 : a->p;
+                if (s->p > 31) perr(0, "FIXED DECIMAL precision > 31",
+                                    s->name);
             }
             s->q = a->q < 0 ? 0 : a->q;
             if (s->ty == TY_FXB && s->q) 
@@ -326,7 +329,7 @@ static char *base_text(Sym *s)
     Sb b;
     char *nm;
     switch (s->ty) {
-    case TY_FXB: return "long";
+    case TY_FXB: return is_long(s) ? "long" : "double";
     case TY_FXD: return is_long(s) ? "long" : "double";
     case TY_FLT: return "double";
     case TY_PTR: return "void *";

@@ -4,6 +4,7 @@ enum { K_N = 1, K_S, K_B, K_P, K_V };
 
 static int ge_q = -1, ge_f = 0, uses_tmp = 0;
 static int subs_chk = 0;
+static int size_chk = 0;
 
 typedef struct { char *t; Sym *s; int nu; } LV;
 
@@ -517,6 +518,7 @@ static char *gbin(Node *e, int *k)
     if (o[0] == '*') {
         if (q1 >= 0 && q2 >= 0) ge_q = q1 + q2;
         else if (f1 || f2) ge_f = f1 > f2 ? f1 : f2;
+        if (f1 || f2) return cat5("pl_fmul(", a, ", ", b, ")");
         return cat5("(", a, " * ", b, ")");
     }
     if (f1 || f2) ge_f = f1 > f2 ? f1 : f2;

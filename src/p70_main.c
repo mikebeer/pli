@@ -189,6 +189,7 @@ static void gen_fn(Fn *f)
             memset(&f->body, 0, sizeof f->body);
             scope_inits(csc);
             subs_chk = opt_subs || (n->pre & PRE_SUBS);
+            size_chk = (n->pre & PRE_SIZE) != 0;
             gsl(n->b);
             sb_s(&pro, sb_str(&f->body));
             f->body = save;

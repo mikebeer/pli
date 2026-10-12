@@ -135,6 +135,8 @@ struct Fn {
 /* condition-prefix bits */
 #define PRE_SUBS 1
 #define PRE_NOCHK 2
+#define PRE_SIZE 4
+#define PRE_NOSZ 8
 
 /* p10_util.c -- memory, errors, string builder */
 
@@ -1581,6 +1583,10 @@ static Node *p_stmt(void)
                         pre |= PRE_SUBS;
                     if (tisid(&tokens.a[i], "nosubscriptrange"))
                         pre |= PRE_NOCHK;
+                    if (tisid(&tokens.a[i], "size"))
+                        pre |= PRE_SIZE;
+                    if (tisid(&tokens.a[i], "nosize"))
+                        pre |= PRE_NOSZ;
                 }
                 ptk = m + 2;
                 continue;
@@ -1919,8 +1925,8 @@ static Sym *lookup(const char *name)
 
 static int is_long(Sym *s)
 {
-    return s->ty == TY_FXB || (s->ty == TY_FXD && s->q == 0 &&
-                               s->p <= 9);
+    return (s->ty == TY_FXB && s->p <= 31) ||
+           (s->ty == TY_FXD && s->q == 0 && s->p <= 9);
 }
 
 /* functions declared by the C headers that plirt.h includes: a
@@ -1961,7 +1967,8 @@ static int is_libc(const char *n)
 static const char *ctype_of(Sym *s)
 {
     switch (s->ty) {
-    case TY_FXB: return s->p <= 15 ? "short" : "int";
+    case TY_FXB:
+        return s->p <= 15 ? "short" : (s->p <= 31 ? "int" : "double");
     case TY_FXD:
         return (s->q == 0 && s->p <= 9) ? "int" : "double";
     case TY_FLT: return s->p <= 7 ? "float" : "double";
@@ -2021,11 +2028,13 @@ static void apply_type(Sym *s, Attr *a)
             if (base == 1) {
                 s->ty = TY_FXB;
                 s->p = a->p < 0 ? 15 : a->p;
-                if (s->p > 31) perr(0, "FIXED BINARY precision > 31",
+                if (s->p > 63) perr(0, "FIXED BINARY precision > 63",
                                     s->name);
             } else {
                 s->ty = TY_FXD;
                 s->p = a->p < 0 ? 5 : a->p;
+                if (s->p > 31) perr(0, "FIXED DECIMAL precision > 31",
+                                    s->name);
             }
             s->q = a->q < 0 ? 0 : a->q;
             if (s->ty == TY_FXB && s->q) 
@@ -2128,7 +2137,7 @@ static char *base_text(Sym *s)
     Sb b;
     char *nm;
     switch (s->ty) {
-    case TY_FXB: return "long";
+    case TY_FXB: return is_long(s) ? "long" : "double";
     case TY_FXD: return is_long(s) ? "long" : "double";
     case TY_FLT: return "double";
     case TY_PTR: return "void *";
@@ -2486,6 +2495,7 @@ enum { K_N = 1, K_S, K_B, K_P, K_V };
 
 static int ge_q = -1, ge_f = 0, uses_tmp = 0;
 static int subs_chk = 0;
+static int size_chk = 0;
 
 typedef struct { char *t; Sym *s; int nu; } LV;
 
@@ -2999,6 +3009,7 @@ static char *gbin(Node *e, int *k)
     if (o[0] == '*') {
         if (q1 >= 0 && q2 >= 0) ge_q = q1 + q2;
         else if (f1 || f2) ge_f = f1 > f2 ? f1 : f2;
+        if (f1 || f2) return cat5("pl_fmul(", a, ", ", b, ")");
         return cat5("(", a, " * ", b, ")");
     }
     if (f1 || f2) ge_f = f1 > f2 ? f1 : f2;
@@ -3469,10 +3480,26 @@ static char *lbl(const char *p, int id)
 /* store a numeric value text into symbol s at lvalue lv */
 static char *numstore(Sym *s, const char *lv, const char *rv)
 {
-    if (is_long(s)) return cat5(lv, " = pl_tol(", rv, ")", ";");
-    if (s->ty == TY_FXD)
-        return cat5(lv, " = pl_fx(", rv, cat3(", ", itoa_(s->q), ")"),
-                    ";");
+    char lim[40];
+    double two = 1.0;
+    int i;
+    if (s->ty == TY_FXB) {
+        for (i = 0; i < s->p; i++) two *= 2.0;
+        sprintf(lim, "%.1f", two);
+    }
+    else if (s->ty == TY_FXD)
+        sprintf(lim, "1e%d", s->p - s->q);
+    if (is_long(s)) {
+        if (size_chk)
+            return cat5(lv, " = pl_stl(", rv,
+                        cat3(", ", lim, ")"), ";");
+        return cat5(lv, " = pl_tolf(", rv, ")", ";");
+    }
+    if (s->ty == TY_FXB || s->ty == TY_FXD)
+        return cat5(lv, " = pl_stf(", rv, cat5(", ", itoa_(s->q), ", ",
+                    lim, size_chk ? ", 1)" : ", 0)"), ";");
+    if (s->ty == TY_FLT)
+        return cat5(lv, " = pl_sfl(", rv, ")", ";");
     return cat4(lv, " = ", rv, ";");
 }
 
@@ -3912,8 +3939,8 @@ static int condid(Node *s, char **fl)
     if (!strcmp(n, "error") || !strcmp(n, "undefinedfile") ||
         !strcmp(n, "name") || !strcmp(n, "record")) return 1;
     if (!strcmp(n, "zerodivide")) return 2;
-    if (!strcmp(n, "overflow") || !strcmp(n, "fixedoverflow"))
-        return 3;
+    if (!strcmp(n, "overflow")) return 3;
+    if (!strcmp(n, "fixedoverflow")) return 13;
     if (!strcmp(n, "underflow")) return 4;
     if (!strcmp(n, "size")) return 5;
     if (!strcmp(n, "conversion")) return 6;
@@ -4168,13 +4195,16 @@ static void gs(Node *s)
     Node *l;
     int save = uses_tmp, mine;
     Sb saved;
-    int sub = 0;
+    int sub = 0, szs = 0;
     for (l = s->lab; l && s->k != S_PROC; l = l->next) {
         Sym *y = lookupc(csc, l->s, C_LABEL);
         if (y) ln(cat2(y->cn, ": ;"));
     }
     if (s->pre & PRE_SUBS) { sub = subs_chk; subs_chk = 1; }
     if (s->pre & PRE_NOCHK) { sub = subs_chk; subs_chk = 0; }
+    szs = size_chk;
+    if (s->pre & PRE_SIZE) size_chk = 1;
+    if (s->pre & PRE_NOSZ) size_chk = 0;
     uses_tmp = 0;
     saved = cur->body;
     memset(&cur->body, 0, sizeof cur->body);
@@ -4194,7 +4224,7 @@ static void gs(Node *s)
             sb_s(&cur->body, sb_str(&got));
         }
     }
-    if (s->pre) subs_chk = sub;
+    if (s->pre) { subs_chk = sub; size_chk = szs; }
     uses_tmp = save;
 }
 
@@ -4768,6 +4798,7 @@ static void gen_fn(Fn *f)
             memset(&f->body, 0, sizeof f->body);
             scope_inits(csc);
             subs_chk = opt_subs || (n->pre & PRE_SUBS);
+            size_chk = (n->pre & PRE_SIZE) != 0;
             gsl(n->b);
             sb_s(&pro, sb_str(&f->body));
             f->body = save;

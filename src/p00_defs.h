@@ -133,3 +133,5 @@ struct Fn {
 /* condition-prefix bits */
 #define PRE_SUBS 1
 #define PRE_NOCHK 2
+#define PRE_SIZE 4
+#define PRE_NOSZ 8
